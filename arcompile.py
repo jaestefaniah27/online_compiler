@@ -45,7 +45,7 @@ def subir_proyecto(remote_proj):
     run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
     run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
     run(f"scp -r * {REMOTE}:{remote_proj}/")
-    run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
+    #run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
 
 def compilar_en_servidor(remote_proj, libs):
     compile_cmd = (
