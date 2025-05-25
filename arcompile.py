@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, subprocess, shlex, glob, json, time, shutil
+import os, sys, subprocess, shlex, glob, json, time, shutil, hashlib
 from pathlib import Path
 import serial.tools.list_ports
 
@@ -95,6 +95,13 @@ def descargar_binarios(remote_proj, build_remote, sketch_base):
 
     return local_files
 
+def hash_proyecto():
+    sha = hashlib.sha256()
+    for path in sorted(Path().rglob("*")):
+        if path.is_file() and path.suffix in {".ino", ".cpp", ".h", ".txt"}:
+            sha.update(path.read_bytes())
+    return sha.hexdigest()
+
 def main():
     inicio = time.time()
 
@@ -108,13 +115,29 @@ def main():
     libs = leer_libraries()
     com  = puerto_esp32()
 
-    print("🛠  Compilación necesaria")
-    remote_proj  = f"{REMOTE_DIR}/{sketch_dir.name}"
-    subir_proyecto(remote_proj)
-    compilar_en_servidor(remote_proj, libs)
+    hash_actual = hash_proyecto()
+    hash_file = Path(".build_hash")
+    hash_anterior = hash_file.read_text() if hash_file.exists() else ""
 
-    build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}"
-    bin_files = descargar_binarios(remote_proj, build_remote, sketch_dir.name)
+    if hash_actual != hash_anterior:
+        print("🛠  Compilación necesaria")
+        remote_proj  = f"{REMOTE_DIR}/{sketch_dir.name}"
+        subir_proyecto(remote_proj)
+        compilar_en_servidor(remote_proj, libs)
+        build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}"
+        bin_files = descargar_binarios(remote_proj, build_remote, sketch_dir.name)
+        hash_file.write_text(hash_actual)
+    else:
+        print("⚡ Usando binarios ya compilados")
+        bin_files = {
+            "bootloader":   Path(f"{sketch_dir.name}.ino.bootloader.bin"),
+            "partitions":   Path(f"{sketch_dir.name}.ino.partitions.bin"),
+            "application":  Path(f"{sketch_dir.name}.ino.bin"),
+            "boot_app0":    Path("boot_app0.bin"),
+        }
+        for f in bin_files.values():
+            if not f.exists():
+                sys.exit(f"❌ Falta el binario requerido: {f}")
 
     # ---------- flasheo optimizado ----------
     esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
