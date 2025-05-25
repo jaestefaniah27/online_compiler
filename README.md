@@ -8,3 +8,9 @@ Asegúrate de tener Python ≥ 3.6 y `pip` instalado. Luego ejecuta:
 
 ```bash
 pip install git+https://github.com/jaestefaniah27/online_compiler.git
+```
+Si quieres re-instalarlo, ejecuta esto: 
+```bash
+pip uninstall arcompile
+pip install git+https://github.com/jaestefaniah27/online_compiler.git
+```
