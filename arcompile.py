@@ -39,7 +39,8 @@ def instalar_librerias(libs):
         return
     print("• Instalando/actualizando librerías en servidor …")
     for lib in libs:
-        run(f"ssh {REMOTE} arduino-cli lib install {shlex.quote(lib)} --no-overwrite")
+        run(f'ssh {REMOTE} "bash -c \'export PATH=\\\"$HOME/bin:$PATH\\\"; arduino-cli lib install {lib} --no-overwrite\'"')
+
 
 def subir_proyecto(remote_proj):
     run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
@@ -48,22 +49,26 @@ def subir_proyecto(remote_proj):
     #run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
 
 def compilar_en_servidor(remote_proj, libs):
+    partition = "min_spiffs"
     compile_cmd = (
-        f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
-        f"--fqbn {FQBN} {remote_proj} --export-binaries"
+        f'ssh {REMOTE} "export PATH=\\\"$HOME/bin:$PATH\\\" && '
+        f'arduino-cli compile --fqbn {FQBN} {remote_proj} '
+        #f'--export-binaries --build-property build.partitions={partition}"'
     )
+
 
     for intento in (1, 2):
         code, out, err = run_capture(compile_cmd)
         if code == 0:
             print("✓ Compilación exitosa")
-            return
+            return partition
         if intento == 1 and "No such file or directory" in err:
             print("⚠ Faltan librerías → se instalan y se reintenta …")
             instalar_librerias(libs)
             continue
         print(out + err)
         sys.exit("❌ Compilación abortada")
+
 
 def descargar_binarios(remote_proj, build_remote, sketch_base):
     nombres = {
@@ -123,8 +128,8 @@ def main():
         print("🛠  Compilación necesaria")
         remote_proj  = f"{REMOTE_DIR}/{sketch_dir.name}"
         subir_proyecto(remote_proj)
-        compilar_en_servidor(remote_proj, libs)
-        build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}"
+        partition = compilar_en_servidor(remote_proj, libs)
+        build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}.{partition}"
         bin_files = descargar_binarios(remote_proj, build_remote, sketch_dir.name)
         hash_file.write_text(hash_actual)
     else:
