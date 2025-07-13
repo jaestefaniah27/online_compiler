@@ -49,7 +49,6 @@ def subir_proyecto(remote_proj):
     #run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
 
 def compilar_en_servidor(remote_proj, libs):
-    partition = "min_spiffs"
     compile_cmd = (
         f'ssh {REMOTE} "export PATH=\\\"$HOME/bin:$PATH\\\" && '
         f'arduino-cli compile --fqbn {FQBN} {remote_proj} '
