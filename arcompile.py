@@ -48,6 +48,7 @@ def subir_proyecto(remote_proj):
     #run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
 
 def compilar_en_servidor(remote_proj, libs):
+    print("🏗️ Iniciando compilación")
     compile_cmd = (
         f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
         f"--fqbn {FQBN} {remote_proj} --export-binaries"
