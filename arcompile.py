@@ -57,11 +57,10 @@ def mostrar_ayuda():
 arcompile v{VERSION}
 
 Uso:
-  arcompile              → Compila y flashea el proyecto automáticamente
-  arcompile min_spiffs   → Fuerza el uso del esquema de particiones min_spiffs
-  arcompile help         → Muestra esta ayuda
-  arcompile update       → Actualiza arcompile a la última versión
-
+  arcompile              → compila y flashea el proyecto automáticamente
+  arcompile min_spiffs   → fuerza el uso del esquema de particiones min_spiffs
+  arcompile help         → muestra esta ayuda
+  arcompile update       → actualiza arcompile a la última versión
 """)
     sys.exit(0)
 
@@ -89,7 +88,7 @@ def compilar_en_servidor(remote_proj, libs, particion=None):
         code, out, err = run_capture(compile_cmd)
         if code == 0:
             print("✓ Compilación exitosa")
-            return out + err
+            return fqbn, out + err
         if intento == 1 and "No such file or directory" in err:
             print("⚠ Faltan librerías → instalando y reintentando …")
             instalar_librerias(libs)
@@ -108,13 +107,13 @@ def binario_excede_tamano(salida):
                 pass
     return False
 
-def descargar_binarios(remote_proj, build_remote, sketch_base):
+def descargar_binarios(remote_proj, build_remote):
     out_dir = Path("binarios")
     out_dir.mkdir(exist_ok=True)
 
     # Descarga todos los .bin generados
-    run(f"ssh {REMOTE} 'ls {build_remote}/*.bin'")  # para debug
-    run(f"scp {REMOTE}:{build_remote}/*.bin binarios/")
+    scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.bin binarios/"
+    run(scp_cmd)
 
     local_files = {}
     for archivo in out_dir.glob("*.bin"):
@@ -136,7 +135,7 @@ def descargar_binarios(remote_proj, build_remote, sketch_base):
             shell=True, text=True
         ).strip()
         if ruta:
-            run(f"scp {REMOTE}:{ruta} binarios/boot_app0.bin")
+            run(f"scp {REMOTE}:{shlex.quote(ruta)} binarios/boot_app0.bin")
             local_files["boot_app0"] = out_dir / "boot_app0.bin"
         else:
             sys.exit("❌ No se encontró boot_app0.bin en el servidor")
@@ -152,6 +151,7 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
+    start = time.time()
     args = [a.lower() for a in sys.argv[1:]]
 
     # 1) Help
@@ -177,29 +177,28 @@ def main():
     com  = puerto_esp32()
 
     # 6) Compilación condicional por hash
-    hash_actual = hash_proyecto()
-    hash_file   = Path(".build_hash")
-    hash_anterior = hash_file.read_text() if hash_file.exists() else ""
+    hash_actual  = hash_proyecto()
+    hash_file    = Path(".build_hash")
+    hash_anterior= hash_file.read_text() if hash_file.exists() else ""
 
     if hash_actual != hash_anterior:
         print("🛠 Compilación necesaria")
         remote_proj = f"{REMOTE_DIR}/{sketch_dir.name}"
         subir_proyecto(remote_proj)
 
-        salida = compilar_en_servidor(remote_proj, libs, particion)
+        used_fqbn, salida = compilar_en_servidor(remote_proj, libs, particion)
 
         # Si no forzó y excede tamaño, reintentar con min_spiffs
         if not particion and binario_excede_tamano(salida):
             print("⚠ Binario >1.3MB → reintentando con min_spiffs")
-            salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
+            used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
             particion = "min_spiffs"
 
-        build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}"
-        bin_files    = descargar_binarios(remote_proj, build_remote, sketch_dir.name)
+        build_remote = f"{remote_proj}/build/{used_fqbn.replace(':','.')}"
+        bin_files    = descargar_binarios(remote_proj, build_remote)
         hash_file.write_text(hash_actual)
     else:
         print("⚡ Usando binarios ya compilados")
-        # Asume ya están en ./binarios
         out_dir = Path("binarios")
         bin_files = {
             "bootloader":   out_dir / f"{sketch_dir.name}.ino.bootloader.bin",
@@ -207,7 +206,7 @@ def main():
             "application":  out_dir / f"{sketch_dir.name}.ino.bin",
             "boot_app0":    out_dir / "boot_app0.bin",
         }
-        for k, f in bin_files.items():
+        for k,f in bin_files.items():
             if not f.exists():
                 sys.exit(f"❌ Falta el binario requerido: {f}")
 
@@ -225,5 +224,4 @@ def main():
     print(f"✅ Terminado en {time.time() - start:.1f} s")
 
 if __name__ == "__main__":
-    start = time.time()
     main()
