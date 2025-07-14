@@ -13,7 +13,7 @@ BAUD        = 921600
 MAX_SIZE    = 1310720
 PACKAGE     = "arcompile"
 REPO_URL    = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile.py"
-VERSION     = "1.0.2"
+VERSION     = "1.0.3"
 # ===============================
 
 def run(cmd, **kw):
@@ -82,7 +82,7 @@ def check_update():
     sys.exit(0)
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
-    print("🏗️ Iniciando compilación")
+    print("🏗️  Iniciando compilación")
     props = f"--build-property build.partitions={particion}" if particion else ""
     if particion:
         print(f"• Usando partición: {particion}")
