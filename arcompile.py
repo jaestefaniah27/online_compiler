@@ -69,24 +69,26 @@ Versión instalada: {VERSION}
 
 def check_update():
     try:
-        with urllib.request.urlopen(REPO_URL) as resp:
-            content = resp.read().decode("utf-8")
-        for line in content.splitlines():
-            if "VERSION" in line and "=" in line:
-                latest = line.split("=")[1].strip().strip('"').strip("'")
-                break
+        # Leer versión local desde version.txt
+        with open(os.path.join(os.path.dirname(__file__), "version.txt"), "r", encoding="utf-8") as f:
+            local_version = f.read().strip()
+
+        # Obtener última versión desde GitHub
+        url = "https://api.github.com/repos/jaestefaniah27/online_compiler/releases/latest"
+        headers = {"Accept": "application/vnd.github+json"}
+        resp = requests.get(url, headers=headers, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        latest_version = data["tag_name"].lstrip("v")  # por si lleva v1.2.3
+
+        if local_version != latest_version:
+            print(f"⚠️  Versión desactualizada ({local_version} instalada, {latest_version} disponible).")
+            print("💡 Ejecuta: arcompile update  para actualizar automáticamente.\n")
         else:
-            print("⚠ No se pudo obtener la versión remota.")
-            return
-        if latest != VERSION:
-            print(f"📦 Nueva versión disponible: {latest} → Actualizando …")
-            run("pip uninstall -y arcompile")
-            run("pip install --upgrade --no-cache-dir git+https://github.com/jaestefaniah27/online_compiler.git")
-        else:
-            print("✔ Ya tienes la última versión instalada.")
+            print(f"✅ Estás usando la última versión ({local_version}).")
+
     except Exception as e:
-        print(f"❌ Error al verificar la versión: {e}")
-    sys.exit(0)
+        print(f"⚠️  No se pudo verificar la versión más reciente: {e}")
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
     print("🏗 Iniciando compilación")
