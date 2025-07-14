@@ -84,7 +84,7 @@ def check_update():
             subprocess.run("pip uninstall arcompile -y", shell=True, check=True)
             subprocess.run("pip install --upgrade git+https://github.com/jaestefaniah27/online_compiler.git", shell=True, check=True)
             print(f"✅ Versión actualizada")
-        return
+            return
         else:
             print(f"✅ Estás usando la última versión ({local_version}).")
 
