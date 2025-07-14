@@ -41,6 +41,12 @@ jobs:
           git add arcompile_version.py
           git diff --cached --quiet || git commit -m "⬆ Bump version to $NEW_VERSION"
           git push https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }} HEAD:main
+      - name: Evitar bucle infinito de bumps
+        if: github.actor == 'github-actions[bot]'
+        run: |
+          echo "🛑 Commit automático detectado. Se cancela bump."
+          exit 0
+
 
       - name: Post Checkout repo
         run: echo "✔ Revisión de versión finalizada"
