@@ -13,8 +13,14 @@ BAUD        = 921600
 MAX_SIZE    = 1310720
 PACKAGE     = "arcompile"
 REPO_URL    = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile.py"
-VERSION     = "1.0.7"
 # ===============================
+
+def cargar_version():
+    ruta = os.path.join(os.path.dirname(__file__), "version.txt")
+    with open(ruta, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+VERSION = cargar_version()
 
 def run(cmd, **kw):
     print(f"» {cmd}")
