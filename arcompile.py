@@ -129,7 +129,7 @@ def hash_proyecto():
 def main():
     args = [arg.lower() for arg in sys.argv[1:]]
 
-    if any(args in ("-h", "--help", "help")):
+    if any(a in ("-h", "--help", "help") for a in args):
         mostrar_ayuda()
 
     forzar_min_spiffs = "min_spiffs" in args
