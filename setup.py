@@ -1,8 +1,12 @@
 from setuptools import setup
 
+def get_version():
+    with open("version.txt", "r", encoding="utf-8") as f:
+        return f.read().strip()
+        
 setup(
     name='arcompile',
-    version='1.0.7',
+    version=get_version(),
     py_modules=['arcompile'],  # 👈 NO 'src.arcompile' ni nada raro
     install_requires=[],
     entry_points={
