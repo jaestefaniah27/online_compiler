@@ -10,40 +10,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repo con historial completo
         uses: actions/checkout@v3
         with:
+          fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
 
-      - name: Cancelar si último commit fue de bump
+      - name: Detectar si el último commit fue un bump
         id: check-bump
         run: |
-          LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
-          if [[ "$LAST_COMMIT_MSG" == Bump\ version\ to* ]]; then
-            echo "Último commit fue un bump de versión, cancelando..."
-            exit 0
+          LAST_MSG=$(git log -1 --pretty=%B)
+          echo "Último commit: '$LAST_MSG'"
+          if [[ "$LAST_MSG" == Bump\ version\ to* ]]; then
+            echo "bump=true" >> $GITHUB_OUTPUT
+          else
+            echo "bump=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Extraer y aumentar versión
         if: steps.check-bump.outputs.bump == 'false'
         id: version
         run: |
-          version_file="arcompile_version.py"
-          current_version=$(grep -oP '__version__\s*=\s*"\K[0-9.]+' "$version_file")
-          echo "Versión actual: $current_version"
-
-          IFS='.' read -r major minor patch <<< "$current_version"
+          file="arcompile_version.py"
+          current=$(grep -oP '__version__\s*=\s*"\K[0-9.]+' "$file")
+          echo "Versión actual: $current"
+          IFS='.' read -r major minor patch <<< "$current"
           patch=$((patch + 1))
-          new_version="$major.$minor.$patch"
-          echo "Nueva versión: $new_version"
+          new="$major.$minor.$patch"
+          echo "__version__ = \"$new\"" > "$file"
+          echo "Nueva versión: $new"
+          echo "version=$new" >> $GITHUB_OUTPUT
 
-          echo "__version__ = \"$new_version\"" > "$version_file"
-          echo "version=$new_version" >> $GITHUB_OUTPUT
-
-      - name: Commit si hay cambios
+      - name: Commit y push bump
         if: steps.check-bump.outputs.bump == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "Bump version to ↑ ${{ steps.version.outputs.version }} ↑" || exit 0
+          git add arcompile_version.py
+          git commit -m "Bump version to ${{ steps.version.outputs.version }}" || echo "Nada que commitear"
           git push origin HEAD:main
