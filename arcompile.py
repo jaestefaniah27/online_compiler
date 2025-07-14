@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, subprocess, shlex, glob, json, time, shutil, hashlib
+import os, sys, subprocess, shlex, glob, json, time, shutil, hashlib, requests
 from pathlib import Path
 import serial.tools.list_ports
 import urllib.request
