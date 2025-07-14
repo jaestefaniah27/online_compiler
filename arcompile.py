@@ -65,7 +65,6 @@ Uso:
   arcompile min_spiffs   → fuerza el uso del esquema de particiones min_spiffs
   arcompile help         → muestra esta ayuda
   arcompile update       → comprueba y actualiza arcompile si hay nueva versión
-
 """)
     sys.exit(0)
 
@@ -87,7 +86,6 @@ def realizar_update():
     if remote == VERSION:
         print(f"✔ Ya tienes la última versión ({VERSION}).")
         sys.exit(0)
-
     print(f"🔄 Nueva versión disponible: {remote} → actualizando …")
     run("pip uninstall -y arcompile")
     run("pip install --no-cache-dir --force-reinstall git+https://github.com/jaestefaniah27/online_compiler.git")
@@ -130,7 +128,7 @@ def binario_excede_tamano(salida):
                 pass
     return False
 
-def descargar_binarios(remote_proj, build_remote):
+def descargar_binarios(build_remote):
     out_dir = Path("binarios")
     out_dir.mkdir(exist_ok=True)
 
@@ -139,14 +137,14 @@ def descargar_binarios(remote_proj, build_remote):
 
     local_files = {}
     for archivo in out_dir.glob("*.bin"):
-        nombre = archivo.name.lower()
-        if "bootloader" in nombre:
+        name = archivo.name.lower()
+        if "bootloader" in name:
             local_files["bootloader"] = archivo
-        elif "partition" in nombre:
+        elif "partition" in name:
             local_files["partitions"] = archivo
-        elif "app0" in nombre:
+        elif "app0" in name:
             local_files["boot_app0"] = archivo
-        elif nombre.endswith(".ino.bin"):
+        elif name.endswith(".ino.bin"):
             local_files["application"] = archivo
 
     if "boot_app0" not in local_files:
@@ -208,8 +206,18 @@ def main():
             used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
             particion = "min_spiffs"
 
-        build_remote = f"{remote_proj}/build/{used_fqbn.replace(':','.')}"
-        bin_files    = descargar_binarios(remote_proj, build_remote)
+        # detectar carpeta real en build/
+        print("🔍 Detectando carpeta de build en el servidor…")
+        out = subprocess.check_output(
+            f"ssh {REMOTE} ls {shlex.quote(remote_proj)}/build",
+            shell=True, text=True
+        ).split()
+        if not out:
+            sys.exit("❌ No se encontró ningún subdirectorio en build/")
+        carpeta_build = out[0].strip()
+        build_remote = f"{remote_proj}/build/{carpeta_build}"
+
+        bin_files = descargar_binarios(build_remote)
         hash_file.write_text(hash_actual)
     else:
         print("⚡ Usando binarios ya compilados")
