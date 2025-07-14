@@ -95,14 +95,18 @@ def check_update():
 
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
-    print("🏗 Iniciando compilación")
-    props = f"--build-property build.partitions={particion}" if particion else ""
+    print("🏗   Iniciando compilación")
+    # Construimos el FQBN, añadiendo el esquema de particiones si se pidió
+    fqbn = FQBN
     if particion:
-        print(f"• Usando partición: {particion}")
+        print(f"• Forzando particiones: {particion}")
+        fqbn = f"{FQBN}:PartitionScheme={particion}"
 
     compile_cmd = (
-        f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
-        f"--fqbn {FQBN} {remote_proj} --export-binaries {props}"
+        f"ssh {REMOTE} "
+        f"/usr/local/bin/arduino-cli compile "
+        f"--fqbn {shlex.quote(fqbn)} "
+        f"{shlex.quote(remote_proj)} --export-binaries"
     )
 
     for intento in (1, 2):
@@ -116,6 +120,7 @@ def compilar_en_servidor(remote_proj, libs, particion=None):
             continue
         print(out + err)
         sys.exit("❌ Compilación abortada")
+
 
 def binario_excede_tamano(salida):
     for linea in salida.splitlines():
