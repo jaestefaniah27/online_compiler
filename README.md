@@ -9,11 +9,17 @@ Asegúrate de tener Python ≥ 3.6 y `pip` instalado. Luego ejecuta:
 ```bash
 pip install git+https://github.com/jaestefaniah27/online_compiler.git
 ```
-Si quieres desinstalarlo, ejecuta esto: 
+
+Si quieres desinstalarlo, ejecuta esto:
+
 ```bash
 pip uninstall arcompile
 ```
+
 Para actualizar/reinstalar:
+
 ```bash
 pip uninstall -y arcompile && pip install --no-cache-dir git+https://github.com/jaestefaniah27/online_compiler.git
 ```
+
+La 33 el nano
