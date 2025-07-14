@@ -13,7 +13,7 @@ BAUD        = 921600
 MAX_SIZE    = 1310720
 PACKAGE     = "arcompile"
 REPO_URL    = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile.py"
-VERSION     = "1.0.0"
+VERSION     = "1.0.1"
 # ===============================
 
 def run(cmd, **kw):
@@ -153,7 +153,7 @@ def hash_proyecto():
 
 def main():
     args = [arg.lower() for arg in sys.argv[1:]]
-
+    particion = None
     if not args:
         pass  # comportamiento normal
     elif "help" in args or "-h" in args or "--help" in args:
