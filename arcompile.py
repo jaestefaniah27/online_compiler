@@ -4,8 +4,6 @@ import os, sys, subprocess, shlex, glob, json, time, shutil, hashlib
 from pathlib import Path
 import serial.tools.list_ports
 import urllib.request
-import threading
-import queue
 
 # ======== CONFIGURACIÓN ========
 REMOTE      = "minecraft_server"
@@ -15,7 +13,7 @@ BAUD        = 921600
 MAX_SIZE    = 1310720
 PACKAGE     = "arcompile"
 REPO_URL    = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile.py"
-VERSION     = "1.0.6"
+VERSION     = "1.0.7"
 # ===============================
 
 def run(cmd, **kw):
@@ -85,7 +83,7 @@ def check_update():
     sys.exit(0)
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
-    print("🏗️  Iniciando compilación")
+    print("🏗 Iniciando compilación")
     props = f"--build-property build.partitions={particion}" if particion else ""
     if particion:
         print(f"• Usando partición: {particion}")
@@ -95,57 +93,28 @@ def compilar_en_servidor(remote_proj, libs, particion=None):
         f"--fqbn {FQBN} {remote_proj} --export-binaries {props}"
     )
 
-    def mostrar_barra_progreso(q):
-        fases = [
-            "Reading", "Generating function", "Compiling", "Archiving", 
-            "Linking", "Retrieving", "Preparing", "Verifying", "Checking", "Uploading"
-        ]
-        total = len(fases)
-        completadas = 0
-        ya_vistas = set()
-
-        while True:
-            try:
-                linea = q.get(timeout=0.1)
-                print(linea.strip())  # Mostrar salida normal también
-                for fase in fases:
-                    if fase in linea and fase not in ya_vistas:
-                        completadas += 1
-                        ya_vistas.add(fase)
-                completadas = min(completadas, total)
-                barra = "#" * completadas + "-" * (total - completadas)
-                print(f"\r⏳ Progreso: [{barra}] {completadas}/{total}", end="", flush=True)
-            except queue.Empty:
-                if completadas == total:
-                    break
-        print()
-
     for intento in (1, 2):
-        q = queue.Queue()
-        proc = subprocess.Popen(compile_cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-
-        hilo = threading.Thread(target=mostrar_barra_progreso, args=(q,))
-        hilo.start()
-
-        salida = ""
-        for linea in proc.stdout:
-            salida += linea
-            q.put(linea)
-
-        proc.wait()
-        hilo.join()
-
-        if proc.returncode == 0:
-            print("\n✓ Compilación exitosa")
-            return salida
-
-        if intento == 1 and "No such file or directory" in salida:
+        code, out, err = run_capture(compile_cmd)
+        if code == 0:
+            print("✓ Compilación exitosa")
+            return out + err
+        if intento == 1 and "No such file or directory" in err:
             print("⚠ Faltan librerías → se instalan y se reintenta …")
             instalar_librerias(libs)
             continue
-
-        print(salida)
+        print(out + err)
         sys.exit("❌ Compilación abortada")
+
+def binario_excede_tamano(salida):
+    for linea in salida.splitlines():
+        if "Sketch uses" in linea and "Maximum is" in linea:
+            try:
+                usado = int(linea.split("Sketch uses")[1].split("bytes")[0].strip().replace(",", ""))
+                print(f"• Binario ocupa {usado} bytes")
+                return usado > MAX_SIZE
+            except Exception:
+                pass
+    return False
 
 def descargar_binarios(remote_proj, build_remote, sketch_base):
     nombres = {
