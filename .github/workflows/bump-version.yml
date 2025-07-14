@@ -7,7 +7,6 @@ on:
 
 jobs:
   bump:
-    if: github.actor != 'github-actions[bot]' # 🛑 Evita bucle de versiones
     runs-on: ubuntu-latest
 
     steps:
@@ -16,11 +15,20 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Cancelar si último commit fue del bot
+        run: |
+          AUTHOR=$(git log -1 --pretty=format:'%an')
+          echo "Último commit hecho por: $AUTHOR"
+          if [ "$AUTHOR" = "github-actions[bot]" ]; then
+            echo "El último commit fue del bot, saliendo..."
+            exit 0
+          fi
+
       - name: Extraer y aumentar versión
         id: versioning
         run: |
           version_file="arcompile_version.py"
-          current=$(grep -Po "(?<=__version__ = \")\d+\.\d+\.\d+" $version_file)
+          current=$(grep -Po '(?<=__version__ = ")[^"]+' $version_file)
           echo "Versión actual: $current"
           IFS='.' read -r major minor patch <<< "$current"
           patch=$((patch + 1))
