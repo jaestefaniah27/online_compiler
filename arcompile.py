@@ -153,7 +153,6 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
-    def main():
     parser = argparse.ArgumentParser(prog="arcompile", description="…")
     sub = parser.add_subparsers(dest="cmd", required=False)
     sub.add_parser("min_spiffs", help="…")
