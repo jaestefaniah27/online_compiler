@@ -24,6 +24,7 @@ jobs:
           fi
 
       - name: Extraer y aumentar versión
+        if: steps.check-bump.outputs.bump == 'false'
         id: version
         run: |
           version_file="arcompile_version.py"
@@ -39,6 +40,7 @@ jobs:
           echo "version=$new_version" >> $GITHUB_OUTPUT
 
       - name: Commit si hay cambios
+        if: steps.check-bump.outputs.bump == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
