@@ -45,7 +45,6 @@ def subir_proyecto(remote_proj):
     run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
     run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
     run(f"scp -r * {REMOTE}:{remote_proj}/")
-    #run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
 
 def compilar_en_servidor(remote_proj, libs):
     print("🏗️ Iniciando compilación")
@@ -103,7 +102,34 @@ def hash_proyecto():
             sha.update(path.read_bytes())
     return sha.hexdigest()
 
+def mostrar_ayuda():
+    print("""
+Uso: arcompile [help]
+
+Este script compila y flashea automáticamente un proyecto ESP32 mediante SSH a un servidor remoto con Arduino-CLI.
+
+Pasos:
+1. Detecta automáticamente el puerto de la ESP32.
+2. Sube los archivos del proyecto al servidor remoto.
+3. Compila el proyecto usando 'arduino-cli'.
+4. Descarga los binarios compilados (y boot_app0 si no está).
+5. Flashea los binarios a la ESP32 mediante 'esptool.py'.
+
+Requisitos:
+- El archivo .ino debe tener el mismo nombre que la carpeta del proyecto.
+- El servidor debe tener configurado el alias SSH en ~/.ssh/config como 'minecraft_server'.
+- Arduino CLI debe estar instalado en el servidor en /usr/local/bin/arduino-cli.
+
+Opcional:
+- Puedes definir librerías en 'libraries.txt', una por línea.
+
+""")
+    sys.exit(0)
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("-h", "--help", "help"):
+        mostrar_ayuda()
+
     inicio = time.time()
 
     sketch_dir   = Path.cwd()
