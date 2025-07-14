@@ -11,11 +11,11 @@ def get_version():
 setup(
     name='arcompile',
     version=get_version(),
-    py_modules=['arcompile'],  # 👈 NO 'src.arcompile' ni nada raro
+    py_modules=['arcompile', 'arcompile_version'], 
     install_requires=[],
     entry_points={
         'console_scripts': [
-            'arcompile = arcompile:main'  # 👈 main() debe existir en arcompile.py
+            'arcompile = arcompile:main' 
         ],
     },
 )
