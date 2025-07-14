@@ -64,13 +64,19 @@ def check_update():
     try:
         local_version = VERSION
 
-        # Obtener última versión desde GitHub
-        url = "https://api.github.com/repos/jaestefaniah27/online_compiler/releases/latest"
-        headers = {"Accept": "application/vnd.github+json"}
-        resp = requests.get(url, headers=headers, timeout=5)
+        # Ruta cruda del archivo version en GitHub (ajusta si cambias de rama o nombre)
+        url = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile_version.py"
+        resp = requests.get(url, timeout=5)
         resp.raise_for_status()
-        data = resp.json()
-        latest_version = data["tag_name"].lstrip("v")
+
+        for line in resp.text.splitlines():
+            if line.startswith("__version__"):
+                delim = '"' if '"' in line else "'"
+                latest_version = line.split(delim)[1]
+                break
+        else:
+            print("⚠️  No se pudo obtener la versión remota.")
+            return
 
         if local_version != latest_version:
             print(f"⚠️  Versión desactualizada ({local_version} instalada, {latest_version} disponible).")
@@ -80,6 +86,7 @@ def check_update():
 
     except Exception as e:
         print(f"⚠️  No se pudo verificar la versión más reciente: {e}")
+
 
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
