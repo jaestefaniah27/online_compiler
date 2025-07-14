@@ -16,6 +16,7 @@ jobs:
           token: ${{ secrets.GH_PAT }}
 
       - name: Cancelar si último commit fue de bump
+        id: check-bump
         run: |
           LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
           if [[ "$LAST_COMMIT_MSG" == Bump\ version\ to* ]]; then
