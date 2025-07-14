@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='arcompile',
-    version='0.1.0',
+    version='1.0.5',
     py_modules=['arcompile'],  # 👈 NO 'src.arcompile' ni nada raro
     install_requires=[],
     entry_points={
