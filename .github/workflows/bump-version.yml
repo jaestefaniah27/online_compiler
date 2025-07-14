@@ -13,34 +13,33 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Cancelar si último commit fue del bot
         run: |
-          AUTHOR=$(git log -1 --pretty=format:'%an')
-          echo "Último commit hecho por: $AUTHOR"
-          if [ "$AUTHOR" = "github-actions[bot]" ]; then
-            echo "El último commit fue del bot, saliendo..."
+          if [ "$(git log -1 --pretty=%an)" = "github-actions[bot]" ]; then
+            echo "Último commit fue del bot, cancelando..."
             exit 0
           fi
 
       - name: Extraer y aumentar versión
-        id: versioning
+        id: version
         run: |
           version_file="arcompile_version.py"
-          current=$(grep -Po '(?<=__version__ = ")[^"]+' $version_file)
-          echo "Versión actual: $current"
-          IFS='.' read -r major minor patch <<< "$current"
+          current_version=$(grep -oP '__version__\s*=\s*"\K[0-9.]+' "$version_file")
+          echo "Versión actual: $current_version"
+
+          IFS='.' read -r major minor patch <<< "$current_version"
           patch=$((patch + 1))
           new_version="$major.$minor.$patch"
-          echo "__version__ = \"$new_version\"" > $version_file
           echo "Nueva versión: $new_version"
+
+          echo "__version__ = \"$new_version\"" > "$version_file"
           echo "version=$new_version" >> $GITHUB_OUTPUT
 
       - name: Commit si hay cambios
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add arcompile_version.py
-          git commit -m "⬆️ Bump version to ${{ steps.versioning.outputs.version }}" || echo "Sin cambios para commitear"
-          git push
+          git commit -am "⬆ Bump version to ${{ steps.version.outputs.version }}" || exit 0
+          git push origin HEAD:main
