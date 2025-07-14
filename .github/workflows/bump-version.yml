@@ -15,10 +15,11 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Cancelar si último commit fue del bot
+      - name: Cancelar si último commit fue de bump
         run: |
-          if [ "$(git log -1 --pretty=%an)" = "github-actions[bot]" ]; then
-            echo "Último commit fue del bot, cancelando..."
+          LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
+          if [[ "$LAST_COMMIT_MSG" == ⬆* ]]; then
+            echo "Último commit fue un bump de versión, cancelando..."
             exit 0
           fi
 
