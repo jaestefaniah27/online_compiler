@@ -62,9 +62,7 @@ Versión instalada: {VERSION}
 
 def check_update():
     try:
-        # Leer versión local desde version.txt
-        with open(os.path.join(os.path.dirname(__file__), "version.txt"), "r", encoding="utf-8") as f:
-            local_version = f.read().strip()
+        local_version = VERSION
 
         # Obtener última versión desde GitHub
         url = "https://api.github.com/repos/jaestefaniah27/online_compiler/releases/latest"
@@ -72,16 +70,17 @@ def check_update():
         resp = requests.get(url, headers=headers, timeout=5)
         resp.raise_for_status()
         data = resp.json()
-        latest_version = data["tag_name"].lstrip("v")  # por si lleva v1.2.3
+        latest_version = data["tag_name"].lstrip("v")
 
         if local_version != latest_version:
             print(f"⚠️  Versión desactualizada ({local_version} instalada, {latest_version} disponible).")
-            print("💡 Ejecuta: arcompile update  para actualizar automáticamente.\n")
+            print("💡 Ejecuta: arcompile update\n")
         else:
             print(f"✅ Estás usando la última versión ({local_version}).")
 
     except Exception as e:
         print(f"⚠️  No se pudo verificar la versión más reciente: {e}")
+
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
     print("🏗 Iniciando compilación")
