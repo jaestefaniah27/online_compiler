@@ -21,5 +21,3 @@ Para actualizar/reinstalar:
 ```bash
 pip uninstall -y arcompile && pip install --no-cache-dir git+https://github.com/jaestefaniah27/online_compiler.git
 ```
-
-sety
