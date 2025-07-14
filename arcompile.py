@@ -4,10 +4,12 @@ import os, sys, subprocess, shlex, glob, json, time, shutil, hashlib
 from pathlib import Path
 import serial.tools.list_ports
 
-REMOTE      = "minecraft_server"
+# ======== CONFIGURACIÓN ========
+REMOTE      = "minecraft_server"             # alias ssh
 REMOTE_DIR  = "/home/ubuntu/compilacion_esp32"
 FQBN        = "esp32:esp32:esp32da"
-BAUD        = 921600
+BAUD        = 921600                         # velocidad esptool
+# ===============================
 
 def run(cmd, **kw):
     print(f"» {cmd}")
@@ -28,31 +30,34 @@ def puerto_esp32():
 
 def leer_libraries():
     f = Path("libraries.txt")
-    return [l.strip() for l in f.read_text(encoding="utf8").splitlines() if l.strip()] if f.exists() else []
+    if not f.exists():
+        return []
+    return [l.strip() for l in f.read_text(encoding="utf8").splitlines() if l.strip()]
 
 def instalar_librerias(libs):
     if not libs:
         return
     print("• Instalando/actualizando librerías en servidor …")
     for lib in libs:
-        run(f'ssh {REMOTE} "bash -c \'export PATH=\\\"$HOME/bin:$PATH\\\"; arduino-cli lib install {lib} --no-overwrite\'"')
+        run(f"ssh {REMOTE} arduino-cli lib install {shlex.quote(lib)} --no-overwrite")
 
 def subir_proyecto(remote_proj):
     run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
     run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
     run(f"scp -r * {REMOTE}:{remote_proj}/")
+    #run(f"ssh {REMOTE} rm -f {remote_proj}/compile.py")
 
 def compilar_en_servidor(remote_proj, libs):
-    partition = "min_spiffs"
     compile_cmd = (
-        f'ssh {REMOTE} "export PATH=\\\"$HOME/bin:$PATH\\\" && '
-        f'arduino-cli compile --fqbn {FQBN} {remote_proj}"'
+        f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
+        f"--fqbn {FQBN} {remote_proj} --export-binaries"
     )
+
     for intento in (1, 2):
         code, out, err = run_capture(compile_cmd)
         if code == 0:
             print("✓ Compilación exitosa")
-            return partition
+            return
         if intento == 1 and "No such file or directory" in err:
             print("⚠ Faltan librerías → se instalan y se reintenta …")
             instalar_librerias(libs)
@@ -60,30 +65,35 @@ def compilar_en_servidor(remote_proj, libs):
         print(out + err)
         sys.exit("❌ Compilación abortada")
 
-def descargar_binarios(remote_proj, build_remote):
-    print("📥 Descargando archivos .bin compilados …")
-    output_dir = Path("binarios")
-    output_dir.mkdir(exist_ok=True)
+def descargar_binarios(remote_proj, build_remote, sketch_base):
+    nombres = {
+        "bootloader":   f"{sketch_base}.ino.bootloader.bin",
+        "partitions":   f"{sketch_base}.ino.partitions.bin",
+        "application":  f"{sketch_base}.ino.bin",
+    }
+    local_files = {}
 
-    # listar todos los binarios en el servidor
-    cmd = f"ssh {REMOTE} 'find {build_remote} -name \"*.bin\"'"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if result.returncode != 0:
-        sys.exit("❌ No se pudo listar binarios en el servidor")
+    for key, fname in nombres.items():
+        remote_path = f"{build_remote}/{fname}"
+        local_path = Path(fname)
+        run(f"scp {REMOTE}:{remote_path} \"{local_path}\"")
+        local_files[key] = local_path
 
-    bin_paths = result.stdout.strip().splitlines()
-    if not bin_paths:
-        sys.exit("❌ No se encontraron archivos .bin en el servidor")
+    # buscar boot_app0.bin en servidor y descargarlo también
+    boot_app0_local = Path("boot_app0.bin")
+    if not boot_app0_local.exists():
+        print("• Descargando boot_app0.bin …")
+        out = subprocess.check_output(
+            f"ssh {REMOTE} find ~/.arduino15 -name boot_app0.bin | head -n1",
+            shell=True, text=True
+        ).strip()
+        if out:
+            run(f"scp {REMOTE}:{out} \"{boot_app0_local}\"")
+        else:
+            sys.exit("❌ No se encontró boot_app0.bin en el servidor")
+    local_files["boot_app0"] = boot_app0_local
 
-    downloaded = []
-    for path in bin_paths:
-        fname = Path(path).name
-        local_path = output_dir / fname
-        run(f"scp {REMOTE}:{shlex.quote(path)} \"{local_path}\"")
-        downloaded.append(local_path)
-
-    print(f"✅ Todos los archivos .bin fueron descargados en la carpeta '{output_dir}/'")
-    return downloaded
+    return local_files
 
 def hash_proyecto():
     sha = hashlib.sha256()
@@ -95,34 +105,52 @@ def hash_proyecto():
 def main():
     inicio = time.time()
 
-    sketch_dir  = Path.cwd()
-    sketch_name = sketch_dir.name + ".ino"
-    ino_path    = sketch_dir / sketch_name
+    sketch_dir   = Path.cwd()
+    sketch_name  = sketch_dir.name + ".ino"
+    ino_path     = sketch_dir / sketch_name
 
     if not ino_path.exists():
         sys.exit(f"❌ No se encontró {sketch_name}")
 
     libs = leer_libraries()
     com  = puerto_esp32()
+
     hash_actual = hash_proyecto()
     hash_file = Path(".build_hash")
     hash_anterior = hash_file.read_text() if hash_file.exists() else ""
 
     if hash_actual != hash_anterior:
         print("🛠  Compilación necesaria")
-        remote_proj = f"{REMOTE_DIR}/{sketch_dir.name}"
+        remote_proj  = f"{REMOTE_DIR}/{sketch_dir.name}"
         subir_proyecto(remote_proj)
-        partition = compilar_en_servidor(remote_proj, libs)
+        compilar_en_servidor(remote_proj, libs)
         build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}"
-        bin_files = descargar_binarios(remote_proj, build_remote)
+        bin_files = descargar_binarios(remote_proj, build_remote, sketch_dir.name)
         hash_file.write_text(hash_actual)
     else:
         print("⚡ Usando binarios ya compilados")
-        bin_files = list(Path("binarios").glob("*.bin"))
-        if not bin_files:
-            sys.exit("❌ No se encontraron binarios locales en la carpeta 'binarios'")
+        bin_files = {
+            "bootloader":   Path(f"{sketch_dir.name}.ino.bootloader.bin"),
+            "partitions":   Path(f"{sketch_dir.name}.ino.partitions.bin"),
+            "application":  Path(f"{sketch_dir.name}.ino.bin"),
+            "boot_app0":    Path("boot_app0.bin"),
+        }
+        for f in bin_files.values():
+            if not f.exists():
+                sys.exit(f"❌ Falta el binario requerido: {f}")
 
-    print(f"✅ Finalizado en {time.time() - inicio:.1f} s")
+    # ---------- flasheo optimizado ----------
+    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
+    flash_cmd = (
+        f"{esptool} --chip esp32 --port {com} --baud {BAUD} write_flash -z "
+        f"0x1000 {bin_files['bootloader']} "
+        f"0x8000 {bin_files['partitions']} "
+        f"0xe000 {bin_files['boot_app0']} "
+        f"0x10000 {bin_files['application']}"
+    )
+    run(flash_cmd)
+
+    print(f"✅ Terminado en {time.time() - inicio:.1f} s")
 
 if __name__ == "__main__":
     main()
