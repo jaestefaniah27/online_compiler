@@ -13,7 +13,7 @@ BAUD        = 921600
 MAX_SIZE    = 1310720
 PACKAGE     = "arcompile"
 REPO_URL    = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile.py"
-VERSION     = "1.0.3"
+VERSION     = "1.0.4"
 # ===============================
 
 def run(cmd, **kw):
@@ -74,7 +74,8 @@ def check_update():
             return
         if latest != VERSION:
             print(f"📦 Nueva versión disponible: {latest} → Actualizando …")
-            run(f"pip install --upgrade --no-cache-dir git+https://github.com/jaestefaniah27/online_compiler.git")
+            run("pip uninstall -y arcompile")
+            run("pip install --upgrade --no-cache-dir git+https://github.com/jaestefaniah27/online_compiler.git")
         else:
             print("✔ Ya tienes la última versión instalada.")
     except Exception as e:
@@ -82,7 +83,7 @@ def check_update():
     sys.exit(0)
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
-    print("🏗️  Iniciando compilación")
+    print("🏗 Iniciando compilación")
     props = f"--build-property build.partitions={particion}" if particion else ""
     if particion:
         print(f"• Usando partición: {particion}")
@@ -152,18 +153,16 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
-    args = [arg.lower() for arg in sys.argv[1:]]
+    args = [a.lower() for a in sys.argv[1:]]
     particion = None
     if not args:
-        pass  # comportamiento normal
-    elif "help" in args or "-h" in args or "--help" in args:
+        pass
+    elif any(a in ("help", "-h", "--help") for a in args):
         mostrar_ayuda()
     elif "update" in args:
         check_update()
     elif "min_spiffs" in args:
         particion = "min_spiffs"
-    else:
-        particion = None
 
     inicio = time.time()
     sketch_dir   = Path.cwd()
