@@ -3,13 +3,17 @@
 import os, sys, subprocess, shlex, glob, json, time, shutil, hashlib
 from pathlib import Path
 import serial.tools.list_ports
+import urllib.request
 
 # ======== CONFIGURACIÓN ========
-REMOTE      = "minecraft_server"             # alias ssh
+REMOTE      = "minecraft_server"
 REMOTE_DIR  = "/home/ubuntu/compilacion_esp32"
 FQBN        = "esp32:esp32:esp32da"
-BAUD        = 921600                         # velocidad esptool
-MAX_SIZE    = 1310720                        # 1.3 MB
+BAUD        = 921600
+MAX_SIZE    = 1310720
+PACKAGE     = "arcompile"
+REPO_URL    = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile.py"
+VERSION     = "1.0.0"
 # ===============================
 
 def run(cmd, **kw):
@@ -31,9 +35,7 @@ def puerto_esp32():
 
 def leer_libraries():
     f = Path("libraries.txt")
-    if not f.exists():
-        return []
-    return [l.strip() for l in f.read_text(encoding="utf8").splitlines() if l.strip()]
+    return [l.strip() for l in f.read_text(encoding="utf8").splitlines() if l.strip()] if f.exists() else []
 
 def instalar_librerias(libs):
     if not libs:
@@ -48,12 +50,35 @@ def subir_proyecto(remote_proj):
     run(f"scp -r * {REMOTE}:{remote_proj}/")
 
 def mostrar_ayuda():
-    print("""
+    print(f"""
 Uso:
-  arcompile            → compila y flashea el proyecto
-  arcompile min_spiffs → compila con partición min_spiffs
-  arcompile help       → muestra esta ayuda
+  arcompile              → compila y flashea el proyecto automáticamente
+  arcompile min_spiffs   → fuerza el uso del esquema de particiones min_spiffs
+  arcompile help         → muestra esta ayuda
+  arcompile update       → actualiza arcompile si hay una nueva versión
+
+Versión instalada: {VERSION}
 """)
+    sys.exit(0)
+
+def check_update():
+    try:
+        with urllib.request.urlopen(REPO_URL) as resp:
+            content = resp.read().decode("utf-8")
+        for line in content.splitlines():
+            if "VERSION" in line and "=" in line:
+                latest = line.split("=")[1].strip().strip('"').strip("'")
+                break
+        else:
+            print("⚠ No se pudo obtener la versión remota.")
+            return
+        if latest != VERSION:
+            print(f"📦 Nueva versión disponible: {latest} → Actualizando …")
+            run(f"pip install --upgrade --no-cache-dir git+https://github.com/jaestefaniah27/online_compiler.git")
+        else:
+            print("✔ Ya tienes la última versión instalada.")
+    except Exception as e:
+        print(f"❌ Error al verificar la versión: {e}")
     sys.exit(0)
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
@@ -71,7 +96,7 @@ def compilar_en_servidor(remote_proj, libs, particion=None):
         code, out, err = run_capture(compile_cmd)
         if code == 0:
             print("✓ Compilación exitosa")
-            return out + err  # para extraer tamaño binario si hace falta
+            return out + err
         if intento == 1 and "No such file or directory" in err:
             print("⚠ Faltan librerías → se instalan y se reintenta …")
             instalar_librerias(libs)
@@ -129,11 +154,16 @@ def hash_proyecto():
 def main():
     args = [arg.lower() for arg in sys.argv[1:]]
 
-    if any(a in ("-h", "--help", "help") for a in args):
+    if not args:
+        pass  # comportamiento normal
+    elif "help" in args or "-h" in args or "--help" in args:
         mostrar_ayuda()
-
-    forzar_min_spiffs = "min_spiffs" in args
-    particion = "min_spiffs" if forzar_min_spiffs else None
+    elif "update" in args:
+        check_update()
+    elif "min_spiffs" in args:
+        particion = "min_spiffs"
+    else:
+        particion = None
 
     inicio = time.time()
     sketch_dir   = Path.cwd()
