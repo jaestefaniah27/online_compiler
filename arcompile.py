@@ -9,6 +9,7 @@ REMOTE      = "minecraft_server"             # alias ssh
 REMOTE_DIR  = "/home/ubuntu/compilacion_esp32"
 FQBN        = "esp32:esp32:esp32da"
 BAUD        = 921600                         # velocidad esptool
+MAX_SIZE    = 1310720                        # 1.3 MB
 # ===============================
 
 def run(cmd, **kw):
@@ -46,24 +47,48 @@ def subir_proyecto(remote_proj):
     run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
     run(f"scp -r * {REMOTE}:{remote_proj}/")
 
-def compilar_en_servidor(remote_proj, libs):
+def mostrar_ayuda():
+    print("""
+Uso:
+  arcompile            → compila y flashea el proyecto
+  arcompile min_spiffs → compila con partición min_spiffs
+  arcompile help       → muestra esta ayuda
+""")
+    sys.exit(0)
+
+def compilar_en_servidor(remote_proj, libs, particion=None):
     print("🏗️ Iniciando compilación")
+    props = f"--build-property build.partitions={particion}" if particion else ""
+    if particion:
+        print(f"• Usando partición: {particion}")
+
     compile_cmd = (
         f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
-        f"--fqbn {FQBN} {remote_proj} --export-binaries"
+        f"--fqbn {FQBN} {remote_proj} --export-binaries {props}"
     )
 
     for intento in (1, 2):
         code, out, err = run_capture(compile_cmd)
         if code == 0:
             print("✓ Compilación exitosa")
-            return
+            return out + err  # para extraer tamaño binario si hace falta
         if intento == 1 and "No such file or directory" in err:
             print("⚠ Faltan librerías → se instalan y se reintenta …")
             instalar_librerias(libs)
             continue
         print(out + err)
         sys.exit("❌ Compilación abortada")
+
+def binario_excede_tamano(salida):
+    for linea in salida.splitlines():
+        if "Sketch uses" in linea and "Maximum is" in linea:
+            try:
+                usado = int(linea.split("Sketch uses")[1].split("bytes")[0].strip().replace(",", ""))
+                print(f"• Binario ocupa {usado} bytes")
+                return usado > MAX_SIZE
+            except Exception:
+                pass
+    return False
 
 def descargar_binarios(remote_proj, build_remote, sketch_base):
     nombres = {
@@ -79,7 +104,6 @@ def descargar_binarios(remote_proj, build_remote, sketch_base):
         run(f"scp {REMOTE}:{remote_path} \"{local_path}\"")
         local_files[key] = local_path
 
-    # buscar boot_app0.bin en servidor y descargarlo también
     boot_app0_local = Path("boot_app0.bin")
     if not boot_app0_local.exists():
         print("• Descargando boot_app0.bin …")
@@ -102,36 +126,16 @@ def hash_proyecto():
             sha.update(path.read_bytes())
     return sha.hexdigest()
 
-def mostrar_ayuda():
-    print("""
-Uso: arcompile [help]
-
-Este script compila y flashea automáticamente un proyecto ESP32 mediante SSH a un servidor remoto con Arduino-CLI.
-
-Pasos:
-1. Detecta automáticamente el puerto de la ESP32.
-2. Sube los archivos del proyecto al servidor remoto.
-3. Compila el proyecto usando 'arduino-cli'.
-4. Descarga los binarios compilados (y boot_app0 si no está).
-5. Flashea los binarios a la ESP32 mediante 'esptool.py'.
-
-Requisitos:
-- El archivo .ino debe tener el mismo nombre que la carpeta del proyecto.
-- El servidor debe tener configurado el alias SSH en ~/.ssh/config como 'minecraft_server'.
-- Arduino CLI debe estar instalado en el servidor en /usr/local/bin/arduino-cli.
-
-Opcional:
-- Puedes definir librerías en 'libraries.txt', una por línea.
-
-""")
-    sys.exit(0)
-
 def main():
-    if len(sys.argv) > 1 and sys.argv[1].lower() in ("-h", "--help", "help"):
+    args = [arg.lower() for arg in sys.argv[1:]]
+
+    if any(arg in ("-h", "--help", "help")):
         mostrar_ayuda()
 
-    inicio = time.time()
+    forzar_min_spiffs = "min_spiffs" in args
+    particion = "min_spiffs" if forzar_min_spiffs else None
 
+    inicio = time.time()
     sketch_dir   = Path.cwd()
     sketch_name  = sketch_dir.name + ".ino"
     ino_path     = sketch_dir / sketch_name
@@ -150,7 +154,13 @@ def main():
         print("🛠  Compilación necesaria")
         remote_proj  = f"{REMOTE_DIR}/{sketch_dir.name}"
         subir_proyecto(remote_proj)
-        compilar_en_servidor(remote_proj, libs)
+        salida = compilar_en_servidor(remote_proj, libs, particion)
+
+        if not particion and binario_excede_tamano(salida):
+            print("⚠ El binario excede 1.3MB → Reintentando con partición min_spiffs …")
+            salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
+            particion = "min_spiffs"
+
         build_remote = f"{remote_proj}/build/{FQBN.replace(':','.')}"
         bin_files = descargar_binarios(remote_proj, build_remote, sketch_dir.name)
         hash_file.write_text(hash_actual)
@@ -166,7 +176,6 @@ def main():
             if not f.exists():
                 sys.exit(f"❌ Falta el binario requerido: {f}")
 
-    # ---------- flasheo optimizado ----------
     esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
     flash_cmd = (
         f"{esptool} --chip esp32 --port {com} --baud {BAUD} write_flash -z "
