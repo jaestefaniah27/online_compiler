@@ -127,9 +127,9 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
-    args = [arg.lower() for arg in sys.argv[1:]]
+    args = [args.lower() for args in sys.argv[1:]]
 
-    if any(arg in ("-h", "--help", "help")):
+    if any(args in ("-h", "--help", "help")):
         mostrar_ayuda()
 
     forzar_min_spiffs = "min_spiffs" in args
