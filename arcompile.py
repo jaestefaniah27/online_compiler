@@ -8,17 +8,19 @@ import time
 import shutil
 import hashlib
 from pathlib import Path
+
+import requests
 import serial.tools.list_ports
-import argparse
-import argcomplete
+
 from arcompile_version import __version__ as VERSION
 
 # ======== CONFIGURACIÓN ========
-REMOTE      = "minecraft_server"
-REMOTE_DIR  = "/home/ubuntu/compilacion_esp32"
-FQBN        = "esp32:esp32:esp32da"
-BAUD        = 921600
-MAX_SIZE    = 1310720   # 1.3 MB
+REMOTE           = "minecraft_server"
+REMOTE_DIR       = "/home/ubuntu/compilacion_esp32"
+FQBN             = "esp32:esp32:esp32da"
+BAUD             = 921600
+MAX_SIZE         = 1310720   # 1.3 MB
+REPO_VERSION_URL = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile_version.py"
 # ===============================
 
 def run(cmd, **kw):
@@ -62,15 +64,34 @@ Uso:
   arcompile              → compila y flashea el proyecto automáticamente
   arcompile min_spiffs   → fuerza el uso del esquema de particiones min_spiffs
   arcompile help         → muestra esta ayuda
-  arcompile update       → actualiza arcompile a la última versión
+  arcompile update       → comprueba y actualiza arcompile si hay nueva versión
+
 """)
     sys.exit(0)
 
+def get_remote_version():
+    try:
+        resp = requests.get(REPO_VERSION_URL, timeout=5)
+        resp.raise_for_status()
+        for line in resp.text.splitlines():
+            if line.startswith("__version__"):
+                return line.split("=")[1].strip().strip('"').strip("'")
+    except Exception as e:
+        print(f"⚠ No se pudo obtener versión remota: {e}")
+    return None
+
 def realizar_update():
-    print("🔄 Actualizando arcompile …")
+    remote = get_remote_version()
+    if not remote:
+        sys.exit("❌ No se pudo comprobar la versión remota.")
+    if remote == VERSION:
+        print(f"✔ Ya tienes la última versión ({VERSION}).")
+        sys.exit(0)
+
+    print(f"🔄 Nueva versión disponible: {remote} → actualizando …")
     run("pip uninstall -y arcompile")
     run("pip install --no-cache-dir --force-reinstall git+https://github.com/jaestefaniah27/online_compiler.git")
-    print("✅ arcompile actualizado")
+    print(f"✅ arcompile actualizado a {remote}")
     sys.exit(0)
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
@@ -113,7 +134,6 @@ def descargar_binarios(remote_proj, build_remote):
     out_dir = Path("binarios")
     out_dir.mkdir(exist_ok=True)
 
-    # Descarga todos los .bin generados
     scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.bin binarios/"
     run(scp_cmd)
 
@@ -129,7 +149,6 @@ def descargar_binarios(remote_proj, build_remote):
         elif nombre.endswith(".ino.bin"):
             local_files["application"] = archivo
 
-    # Asegura boot_app0
     if "boot_app0" not in local_files:
         print("• Descargando boot_app0.bin …")
         ruta = subprocess.check_output(
@@ -153,52 +172,29 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
-    parser = argparse.ArgumentParser(prog="arcompile", description="…")
-    sub = parser.add_subparsers(dest="cmd", required=False)
-    sub.add_parser("min_spiffs", help="…")
-    sub.add_parser("help",       help="…")
-    sub.add_parser("update",     help="…")
-
-    argcomplete.autocomplete(parser)
-    args = parser.parse_args()
-
-    if args.cmd == "help":
-        mostrar_ayuda()
-    elif args.cmd == "update":
-        realizar_update()
-    elif args.cmd == "min_spiffs":
-        particion = "min_spiffs"
-    else:
-        particion = None
     start = time.time()
     args = [a.lower() for a in sys.argv[1:]]
 
-    # 1) Help
     if any(a in ("help", "-h", "--help") for a in args):
         mostrar_ayuda()
 
-    # 2) Update
     if "update" in args:
         realizar_update()
 
-    # 3) Forzar partición si lo pide el usuario
     particion = "min_spiffs" if "min_spiffs" in args else None
 
-    # 4) Preparar paths
     sketch_dir  = Path.cwd()
     sketch_name = sketch_dir.name + ".ino"
     ino_path    = sketch_dir / sketch_name
     if not ino_path.exists():
         sys.exit(f"❌ No se encontró {sketch_name}")
 
-    # 5) Detectar bibliotecas y puerto serie
     libs = leer_libraries()
     com  = puerto_esp32()
 
-    # 6) Compilación condicional por hash
-    hash_actual  = hash_proyecto()
-    hash_file    = Path(".build_hash")
-    hash_anterior= hash_file.read_text() if hash_file.exists() else ""
+    hash_actual   = hash_proyecto()
+    hash_file     = Path(".build_hash")
+    hash_anterior = hash_file.read_text() if hash_file.exists() else ""
 
     if hash_actual != hash_anterior:
         print("🛠 Compilación necesaria")
@@ -207,7 +203,6 @@ def main():
 
         used_fqbn, salida = compilar_en_servidor(remote_proj, libs, particion)
 
-        # Si no forzó y excede tamaño, reintentar con min_spiffs
         if not particion and binario_excede_tamano(salida):
             print("⚠ Binario >1.3MB → reintentando con min_spiffs")
             used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
@@ -220,16 +215,15 @@ def main():
         print("⚡ Usando binarios ya compilados")
         out_dir = Path("binarios")
         bin_files = {
-            "bootloader":   out_dir / f"{sketch_dir.name}.ino.bootloader.bin",
-            "partitions":   out_dir / f"{sketch_dir.name}.ino.partitions.bin",
-            "application":  out_dir / f"{sketch_dir.name}.ino.bin",
+            "bootloader":   out_dir / f"{sketch_name}.bootloader.bin",
+            "partitions":   out_dir / f"{sketch_name}.partitions.bin",
+            "application":  out_dir / f"{sketch_name}.ino.bin",
             "boot_app0":    out_dir / "boot_app0.bin",
         }
-        for k,f in bin_files.items():
+        for k, f in bin_files.items():
             if not f.exists():
                 sys.exit(f"❌ Falta el binario requerido: {f}")
 
-    # 7) Flasheo
     esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
     flash_cmd = (
         f"{esptool} --chip esp32 --port {com} --baud {BAUD} write_flash -z "
