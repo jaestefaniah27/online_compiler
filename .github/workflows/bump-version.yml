@@ -1,0 +1,44 @@
+name: bump-version
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GH_PAT }}  # Usamos PAT para push
+
+      - name: Extraer y aumentar versión
+        id: bump
+        run: |
+          FILE="arcompile_version.py"
+          VERSION_LINE=$(grep "__version__" "$FILE")
+          VERSION=$(echo "$VERSION_LINE" | cut -d'"' -f2)
+          echo "Versión actual: $VERSION"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          echo "Nueva versión: $NEW_VERSION"
+
+          echo "__version__ = \"$NEW_VERSION\"" > "$FILE"
+
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Commit si hay cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add arcompile_version.py
+          git diff --cached --quiet || git commit -m "⬆ Bump version to $NEW_VERSION"
+          git push https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }} HEAD:main
+
+      - name: Post Checkout repo
+        run: echo "✔ Revisión de versión finalizada"
+
