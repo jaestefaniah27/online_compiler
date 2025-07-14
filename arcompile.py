@@ -9,6 +9,8 @@ import shutil
 import hashlib
 from pathlib import Path
 import serial.tools.list_ports
+import argparse
+import argcomplete
 from arcompile_version import __version__ as VERSION
 
 # ======== CONFIGURACIÓN ========
@@ -151,6 +153,24 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
+    def main():
+    parser = argparse.ArgumentParser(prog="arcompile", description="…")
+    sub = parser.add_subparsers(dest="cmd", required=False)
+    sub.add_parser("min_spiffs", help="…")
+    sub.add_parser("help",       help="…")
+    sub.add_parser("update",     help="…")
+
+    argcomplete.autocomplete(parser)
+    args = parser.parse_args()
+
+    if args.cmd == "help":
+        mostrar_ayuda()
+    elif args.cmd == "update":
+        realizar_update()
+    elif args.cmd == "min_spiffs":
+        particion = "min_spiffs"
+    else:
+        particion = None
     start = time.time()
     args = [a.lower() for a in sys.argv[1:]]
 
