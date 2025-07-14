@@ -127,7 +127,7 @@ def hash_proyecto():
     return sha.hexdigest()
 
 def main():
-    args = [args.lower() for args in sys.argv[1:]]
+    args = [arg.lower() for arg in sys.argv[1:]]
 
     if any(args in ("-h", "--help", "help")):
         mostrar_ayuda()
