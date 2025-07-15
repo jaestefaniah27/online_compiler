@@ -42,8 +42,7 @@ def run(cmd, **kw):
     try:
         subprocess.run(cmd, shell=True, check=True, **kw)
     except subprocess.CalledProcessError as e:
-        # Guardar stderr si está disponible
-        if hasattr(e, 'stderr') and e.stderr:
+        if e.stderr:
             ERROR_LOG.write_text(e.stderr, encoding='utf8')
         raise
 
@@ -51,7 +50,6 @@ def run(cmd, **kw):
 def run_capture(cmd):
     p = subprocess.run(cmd, shell=True, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    # Registrar errores en ERROR_LOG
     if p.stderr:
         ERROR_LOG.write_text(p.stderr, encoding='utf8')
     return p.returncode, p.stdout, p.stderr
@@ -139,9 +137,7 @@ def estimar_tiempo():
 
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
-    # Limpiar error log antes de compilar
     ERROR_LOG.write_text("", encoding='utf8')
-    # Mostrar estimación antes de compilar
     estimar_tiempo()
     print("🏗 Iniciando compilación")
     fqbn = FQBN
@@ -207,7 +203,7 @@ def descargar_binarios(build_remote):
         ).strip()
         if ruta:
             run(f"scp {REMOTE}:{shlex.quote(ruta)} binarios/boot_app0.bin")
-            local_files["boot_app0"] = out_dir / "boot_app0.bin"
+            local_files["boot_app0"] = Path("binarios") / "boot_app0.bin"
         else:
             sys.exit("❌ No se encontró boot_app0.bin en el servidor")
 
@@ -217,5 +213,88 @@ def descargar_binarios(build_remote):
 
 def hash_proyecto():
     sha = hashlib.sha256()
-    for path in sorted(Path().rglob("*")):
+    for path in sorted(Path.cwd().rglob("*")):
         if path.is_file() and path.suffix in {".ino", ".cpp", ".h", ".txt"}:
+            sha.update(path.read_bytes())
+    return sha.hexdigest()
+
+
+def main():
+    start = time.time()
+    args = [a.lower() for a in sys.argv[1:]]
+
+    if any(a in ("help", "-h", "--help") for a in args):
+        mostrar_ayuda()
+
+    if "update" in args:
+        realizar_update()
+
+    particion = "min_spiffs" if "min_spiffs" in args else None
+
+    sketch_dir  = Path.cwd()
+    sketch_name = sketch_dir.name + ".ino"
+    ino_path    = sketch_dir / sketch_name
+    if not ino_path.exists():
+        sys.exit(f"❌ No se encontró {sketch_name}")
+
+    libs = leer_libraries()
+    com  = puerto_esp32()
+
+    hash_actual   = hash_proyecto()
+    hash_file     = Path(".build_hash")
+    hash_anterior = hash_file.read_text() if hash_file.exists() else ""
+
+    if hash_actual != hash_anterior:
+        print("🛠 Compilación necesaria")
+        remote_proj = f"{REMOTE_DIR}/{sketch_dir.name}"
+        subir_proyecto(remote_proj)
+
+        used_fqbn, salida = compilar_en_servidor(remote_proj, libs, particion)
+
+        if not particion and binario_excede_tamano(salida):
+            print("⚠ Binario >1.3MB → reintentando con min_spiffs")
+            used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
+            particion = "min_spiffs"
+
+        COMPILE_LOG.write_text(salida, encoding="utf8")
+        print(f"ℹ Salida de compilación guardada en {COMPILE_LOG}")
+
+        print("🔍 Detectando carpeta de build en el servidor…")
+        out = subprocess.check_output(
+            f"ssh {REMOTE} ls {shlex.quote(remote_proj)}/build",
+            shell=True, text=True
+        ).split()
+        if not out:
+            sys.exit("❌ No se encontró ningún subdirectorio en build/")
+        carpeta_build = out[0].strip()
+        build_remote = f"{remote_proj}/build/{carpeta_build}"
+
+        bin_files = descargar_binarios(build_remote)
+        hash_file.write_text(hash_actual)
+    else:
+        print("⚡ Usando binarios ya compilados")
+        out_dir = Path("binarios")
+        bin_files = {
+            "bootloader":   out_dir / f"{sketch_name}.bootloader.bin",
+            "partitions":   out_dir / f"{sketch_name}.partitions.bin",
+            "application":  out_dir / f"{sketch_name}.ino.bin",
+            "boot_app0":    out_dir / "boot_app0.bin",
+        }
+        for k, f in bin_files.items():
+            if not f.exists():
+                sys.exit(f"❌ Falta el binario requerido: {f}")
+
+    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
+    flash_cmd = (
+        f"{esptool} --chip esp32 --port {com} --baud {BAUD} write_flash -z "
+        f"0x1000 {bin_files['bootloader']} "
+        f"0x8000 {bin_files['partitions']} "
+        f"0xe000 {bin_files['boot_app0']} "
+        f"0x10000 {bin_files['application']}"
+    )
+    run(flash_cmd)
+
+    print(f"✅ Terminado en {time.time() - start:.1f} s")
+
+if __name__ == "__main__":
+    main()
