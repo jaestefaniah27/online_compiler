@@ -5,9 +5,17 @@ import sys
 import subprocess
 import shlex
 import time
+import atexit
 import shutil
 import hashlib
 from pathlib import Path
+
+# Registrar un handler para mostrar el tiempo transcurrido al finalizar (incluso si hay un sys.exit)
+_start_time = time.time()
+
+@atexit.register
+def _print_elapsed():
+    print(f"⏱ Tiempo transcurrido: {time.time() - _start_time:.1f} s")
 
 import requests
 import serial.tools.list_ports
@@ -210,7 +218,7 @@ def main():
         log_file = Path("compile.log")
         log_file.write_text(salida, encoding="utf8")
         print(f"ℹ Salida de compilación guardada en {log_file}")
-        
+
         # detectar carpeta real en build/
         print("🔍 Detectando carpeta de build en el servidor…")
         out = subprocess.check_output(
@@ -220,7 +228,7 @@ def main():
         if not out:
             sys.exit("❌ No se encontró ningún subdirectorio en build/")
         carpeta_build = out[0].strip()
-        build_remote = f"{remote_proj}/build/{carpeta_build}"
+        build_remote = f"{REMOTE_DIR}/{sketch_dir.name}/build/{carpeta_build}" if "remote_proj" in locals() else f"{remote_proj}/build/{carpeta_build}"
 
         bin_files = descargar_binarios(build_remote)
         hash_file.write_text(hash_actual)
