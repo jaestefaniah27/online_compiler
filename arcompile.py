@@ -206,6 +206,11 @@ def main():
             used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
             particion = "min_spiffs"
 
+        # Guardar salida de compilación en archivo log
+        log_file = Path("compile.log")
+        log_file.write_text(salida, encoding="utf8")
+        print(f"ℹ Salida de compilación guardada en {log_file}")
+        
         # detectar carpeta real en build/
         print("🔍 Detectando carpeta de build en el servidor…")
         out = subprocess.check_output(
