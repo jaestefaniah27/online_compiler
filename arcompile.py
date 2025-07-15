@@ -15,17 +15,17 @@ import serial.tools.list_ports
 from arcompile_version import __version__ as VERSION
 
 # ======== CONFIGURACIÓN ========
-REMOTE             = "minecraft_server"
-REMOTE_DIR         = "/home/ubuntu/compilacion_esp32"
-FQBN               = "esp32:esp32:esp32da"
-BAUD               = 921600
-MAX_SIZE           = 1310720   # 1.3 MB
-REPO_VERSION_URL   = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile_version.py"
+REMOTE           = "minecraft_server"
+REMOTE_DIR       = "/home/ubuntu/compilacion_esp32"
+FQBN             = "esp32:esp32:esp32da"
+BAUD             = 921600
+MAX_SIZE         = 1310720   # 1.3 MB
+REPO_VERSION_URL = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile_version.py"
 # Estimación basada en líneas de código (en segundos por línea)
-TIME_PER_LINE      = 0.02
+TIME_PER_LINE    = 0.02
 # Archivos de log
-COMPILE_LOG        = Path("compile.log")
-ERROR_LOG          = Path("error.log")
+COMPILE_LOG      = Path("compile.log")
+ERROR_LOG        = Path("error.log")
 # ===============================
 
 # Tiempo de inicio para cálculo de elapsed
@@ -65,7 +65,78 @@ def puerto_esp32():
             return p.device
     sys.exit("❌ ESP32 no encontrada")
 
-# ... resto del código permanece igual hasta compilar_en_servidor
+
+def leer_libraries():
+    f = Path("libraries.txt")
+    if not f.exists():
+        return []
+    return [l.strip() for l in f.read_text(encoding="utf8").splitlines() if l.strip()]
+
+
+def instalar_librerias(libs):
+    if not libs:
+        return
+    print("• Instalando/actualizando librerías en servidor …")
+    for lib in libs:
+        run(f"ssh {REMOTE} arduino-cli lib install {shlex.quote(lib)} --no-overwrite")
+
+
+def subir_proyecto(remote_proj):
+    run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
+    run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
+    run(f"scp -r * {REMOTE}:{remote_proj}/")
+
+
+def mostrar_ayuda():
+    print(f"""
+arcompile v{VERSION}
+
+Uso:
+  arcompile              → compila y flashea el proyecto automáticamente
+  arcompile min_spiffs   → fuerza el uso del esquema de particiones min_spiffs
+  arcompile help         → muestra esta ayuda
+  arcompile update       → comprueba y actualiza arcompile si hay nueva versión
+""")
+    sys.exit(0)
+
+
+def get_remote_version():
+    try:
+        resp = requests.get(REPO_VERSION_URL, timeout=5)
+        resp.raise_for_status()
+        for line in resp.text.splitlines():
+            if line.startswith("__version__"):
+                return line.split("=")[1].strip().strip('"').strip("'")
+    except Exception as e:
+        print(f"⚠ No se pudo obtener versión remota: {e}")
+    return None
+
+
+def realizar_update():
+    remote = get_remote_version()
+    if not remote:
+        sys.exit("❌ No se pudo comprobar la versión remota.")
+    if remote == VERSION:
+        print(f"✔ Ya tienes la última versión ({VERSION}).")
+        sys.exit(0)
+    print(f"🔄 Nueva versión disponible: {remote} → actualizando …")
+    run("pip uninstall -y arcompile")
+    run("pip install --no-cache-dir --force-reinstall git+https://github.com/jaestefaniah27/online_compiler.git")
+    print(f"✅ arcompile actualizado a {remote}")
+    sys.exit(0)
+
+
+def estimar_tiempo():
+    total_lineas = 0
+    for ext in (".ino", ".cpp", ".h"):
+        for file in Path.cwd().rglob(f"*{ext}"):
+            try:
+                total_lineas += sum(1 for _ in file.open(encoding='utf8', errors='ignore'))
+            except Exception:
+                continue
+    estimado = total_lineas * TIME_PER_LINE
+    print(f"⏳ Estimación de compilación basada en {total_lineas} líneas: ~{estimado:.1f} s")
+
 
 def compilar_en_servidor(remote_proj, libs, particion=None):
     # Limpiar error log antes de compilar
@@ -94,55 +165,57 @@ def compilar_en_servidor(remote_proj, libs, particion=None):
             instalar_librerias(libs)
             continue
         print(out + err)
-        # En caso de abortar, err ya grabado, salimos
         sys.exit("❌ Compilación abortada")
 
-# ... resto del código sin cambios
 
-def main():
-    start = time.time()
-    args = [a.lower() for a in sys.argv[1:]]
+def binario_excede_tamano(salida):
+    for linea in salida.splitlines():
+        if "Sketch uses" in linea and "Maximum is" in linea:
+            try:
+                usado = int(linea.split("Sketch uses")[1].split("bytes")[0].strip().replace(",", ""))
+                print(f"• Binario ocupa {usado} bytes")
+                return usado > MAX_SIZE
+            except:
+                pass
+    return False
 
-    if any(a in ("help", "-h", "--help") for a in args):
-        mostrar_ayuda()
 
-    if "update" in args:
-        realizar_update()
+def descargar_binarios(build_remote):
+    out_dir = Path("binarios")
+    out_dir.mkdir(exist_ok=True)
 
-    particion = "min_spiffs" if "min_spiffs" in args else None
+    scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.bin binarios/"
+    run(scp_cmd)
 
-    sketch_dir  = Path.cwd()
-    sketch_name = sketch_dir.name + ".ino"
-    ino_path    = sketch_dir / sketch_name
-    if not ino_path.exists():
-        sys.exit(f"❌ No se encontró {sketch_name}")
+    local_files = {}
+    for archivo in out_dir.glob("*.bin"):
+        name = archivo.name.lower()
+        if "bootloader" in name:
+            local_files["bootloader"] = archivo
+        elif "partition" in name:
+            local_files["partitions"] = archivo
+        elif "app0" in name:
+            local_files["boot_app0"] = archivo
+        elif name.endswith(".ino.bin"):
+            local_files["application"] = archivo
 
-    libs = leer_libraries()
-    com  = puerto_esp32()
+    if "boot_app0" not in local_files:
+        print("• Descargando boot_app0.bin …")
+        ruta = subprocess.check_output(
+            f"ssh {REMOTE} find ~/.arduino15 -name boot_app0.bin | head -n1",
+            shell=True, text=True
+        ).strip()
+        if ruta:
+            run(f"scp {REMOTE}:{shlex.quote(ruta)} binarios/boot_app0.bin")
+            local_files["boot_app0"] = out_dir / "boot_app0.bin"
+        else:
+            sys.exit("❌ No se encontró boot_app0.bin en el servidor")
 
-    hash_actual   = hash_proyecto()
-    hash_file     = Path(".build_hash")
-    hash_anterior = hash_file.read_text() if hash_file.exists() else ""
+    print("✅ Binarios descargados en ./binarios/")
+    return local_files
 
-    if hash_actual != hash_anterior:
-        print("🛠 Compilación necesaria")
-        remote_proj = f"{REMOTE_DIR}/{sketch_dir.name}"
-        subir_proyecto(remote_proj)
 
-        used_fqbn, salida = compilar_en_servidor(remote_proj, libs, particion)
-
-        if not particion and binario_excede_tamano(salida):
-            print("⚠ Binario >1.3MB → reintentando con min_spiffs")
-            used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
-            particion = "min_spiffs"
-
-        # Guardar salida de compilación en archivo log
-        COMPILE_LOG.write_text(salida, encoding="utf8")
-        print(f"ℹ Salida de compilación guardada en {COMPILE_LOG}")
-
-        # ... continuar con descarga de binarios etc.
-
-    # ... resto del main
-
-if __name__ == "__main__":
-    main()
+def hash_proyecto():
+    sha = hashlib.sha256()
+    for path in sorted(Path().rglob("*")):
+        if path.is_file() and path.suffix in {".ino", ".cpp", ".h", ".txt"}:
