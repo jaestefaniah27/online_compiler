@@ -277,7 +277,7 @@ def main():
         bin_files = {
             "bootloader":   out_dir / f"{sketch_name}.bootloader.bin",
             "partitions":   out_dir / f"{sketch_name}.partitions.bin",
-            "application":  out_dir / f"{sketch_name}.ino.bin",
+            "application":  out_dir / f"{sketch_name}.bin",
             "boot_app0":    out_dir / "boot_app0.bin",
         }
         for k, f in bin_files.items():
