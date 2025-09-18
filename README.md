@@ -9,7 +9,11 @@ Asegúrate de tener Python ≥ 3.6 y `pip` instalado. Luego ejecuta:
 ```bash
 pip install git+https://github.com/jaestefaniah27/online_compiler.git
 ```
+O prueba con 
 
+```bash
+py -m pip install git+https://github.com/jaestefaniah27/online_compiler.git
+``` 
 Si quieres desinstalarlo, ejecuta esto:
 
 ```bash
@@ -54,6 +58,10 @@ arcompile update
    * Sube tu sketch al servidor remoto
    * Compila y descarga los `.bin` a `./binarios/`
    * Flashea el ESP32 en serie
+   Si no tira normal usar:
+```bash
+py -m arcompile
+```
 2. **Forzar particiones pequeñas + SPIFFS**
 
    ```bash
