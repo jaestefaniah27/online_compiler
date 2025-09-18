@@ -198,7 +198,7 @@ def descargar_binarios(build_remote):
     if "boot_app0" not in local_files:
         print("• Descargando boot_app0.bin …")
         ruta = subprocess.check_output(
-            f"ssh {REMOTE} find ~/.arduino15 -name boot_app0.bin | head -n1",
+            f'ssh {REMOTE} "find ~/.arduino15 -name boot_app0.bin -print -quit"',
             shell=True, text=True
         ).strip()
         if ruta:
