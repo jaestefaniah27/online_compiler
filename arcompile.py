@@ -321,11 +321,138 @@ def construir_flash_cmd(esptool, com, baud, files, family):
     )
     return flash_cmd
 
+# ===== Releases (guardar/flash sin recompilar) =====
+
+def releases_dir() -> Path:
+    d = Path("releases")
+    d.mkdir(exist_ok=True)
+    return d
+
+def write_meta(dirpath: Path, fqbn: str, family: str):
+    meta = dirpath / ".meta"
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"NAME={dirpath.name}",
+        f"DATE={ts}",
+        f"FQBN={fqbn}",
+        f"FAMILY={family}",
+    ]
+    meta.write_text("\n".join(lines) + "\n", encoding="utf8")
+
+def read_meta(dirpath: Path) -> dict:
+    meta = dirpath / ".meta"
+    if not meta.exists():
+        # fallback: intenta deducir familia por presencia de boot_app0
+        info = {}
+        info["FAMILY"] = "esp32" if (dirpath/"main.ino.bootloader.bin").exists() and (dirpath/"boot_app0.bin").exists() else "esp32c3"
+        info["FQBN"] = ""
+        return info
+    d = {}
+    for line in meta.read_text(encoding="utf8").splitlines():
+        if "=" in line:
+            k,v = line.split("=",1)
+            d[k.strip()] = v.strip()
+    return d
+
+def save_release(name: str, fqbn: str, family: str):
+    src = Path("binarios")
+    if not src.exists():
+        sys.exit("❌ No hay carpeta ./binarios. Compila primero.")
+    dst = releases_dir() / name
+    if dst.exists():
+        sys.exit(f"❌ Ya existe releases/{name}. Elige otro nombre.")
+    dst.mkdir(parents=True)
+
+    # copia ficheros relevantes si existen
+    copied = 0
+    for fn in ["main.ino.bootloader.bin", "main.ino.partitions.bin", "main.ino.bin", "boot_app0.bin",
+               # por si tus nombres cambian:
+               f"{Path.cwd().name}.ino.bootloader.bin",
+               f"{Path.cwd().name}.ino.partitions.bin",
+               f"{Path.cwd().name}.ino.bin"]:
+        f = src / fn
+        if f.exists():
+            shutil.copy2(f, dst / f.name)
+            copied += 1
+
+    if copied == 0:
+        sys.exit("❌ No se encontraron binarios en ./binarios para guardar.")
+
+    write_meta(dst, fqbn, family)
+    print(f"✅ Guardado en releases/{name}")
+
+def load_release_bins(name: str) -> (dict, str):
+    rdir = releases_dir() / name
+    if not rdir.exists():
+        sys.exit(f"❌ No existe releases/{name}")
+    meta = read_meta(rdir)
+    family = meta.get("FAMILY", "esp32")
+
+    files = {}
+    # admite ambos prefijos (main.ino.* o <sketch>.ino.*)
+    candidates = list(rdir.glob("*.bin"))
+    for archivo in candidates:
+        low = archivo.name.lower()
+        if "bootloader" in low:
+            files["bootloader"] = archivo
+        elif "partition" in low:
+            files["partitions"] = archivo
+        elif "app0" in low:
+            files["boot_app0"] = archivo
+        elif low.endswith(".ino.bin"):
+            files["application"] = archivo
+
+    if "application" not in files:
+        # intenta encontrar *.bin si no incluye .ino
+        app = [p for p in candidates if p.name.endswith(".bin") and "partition" not in p.name and "bootloader" not in p.name and "app0" not in p.name]
+        if app:
+            files["application"] = app[0]
+
+    return files, family
+
+def flash_release(name: str, port: str|None, baud: int):
+    files, family = load_release_bins(name)
+    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
+    com = port or puerto_esp32()
+    cmd = construir_flash_cmd(esptool, com, baud, files, family)
+    run(cmd)
+    print(f"✅ Flash de release '{name}' completado en {com}")
+
 
 def main():
     start = time.time()
     args = [a.lower() for a in sys.argv[1:]]
 
+    # --- NUEVO: guardar y flashear releases ---
+    if args and args[0].lower() == "save":
+        if len(args) < 2:
+            sys.exit("Uso: arcompile save <nombre_release>")
+        # necesitamos saber fqbn/family actuales; si no acabas de compilar, deducimos por FQBN_DEFAULT
+        fqbn_base = resolver_fqbn_desde_args(args[2:])  # por si el user pasa esp32c3 aquí también
+        family = familia_chip_de_fqbn(fqbn_base)
+        # mejor: intenta leer compile.log para el FQBN real si existe
+        try:
+            # formato típico de arduino-cli en compile.log (opcional)
+            with open(COMPILE_LOG, "r", encoding="utf8") as f:
+                txt = f.read()
+                for token in ("--fqbn", "FQBN:"):
+                    if token in txt:
+                        # no siempre está, así que es best-effort
+                        pass
+        except Exception:
+            pass
+        save_release(args[1], fqbn_base, family)
+        return
+
+    if args and args[0].lower() == "flash":
+        if len(args) < 2:
+            sys.exit("Uso: arcompile flash <nombre_release> [COMx]")
+        name = args[1]
+        port = args[2] if len(args) >= 3 else None
+        flash_release(name, port, BAUD)
+        print(f"✅ Terminado en {time.time() - start:.1f} s")
+        return
+    
     if any(a in ("help", "-h", "--help") for a in args):
         mostrar_ayuda()
 
