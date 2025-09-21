@@ -19,7 +19,7 @@ REMOTE           = "minecraft_server"
 REMOTE_DIR       = "/home/ubuntu/compilacion_esp32"
 
 # FQBN por defecto (puedes sobreescribirlo desde CLI: esp32c3 / s3 / dev / da / fqbn=...)
-FQBN_DEFAULT     = "esp32:esp32:esp32da"
+FQBN_DEFAULT     = "esp32:esp32:esp32"
 
 BAUD             = 921600
 MAX_SIZE         = 1310720   # 1.3 MB (límite heurístico para decidir min_spiffs)
