@@ -1,300 +1,322 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
+"""
+arcompile.py — Compilar/subir sketches para Arduino/ESP32 usando arduino-cli,
+SIN depender de ningún archivo .json (solo flags de línea de comandos).
+
+Características:
+- Selección de placa por FQBN (--fqbn) o alias (--board).
+- Opciones de menú (--menu cpu=atmega328old,psram=enabled,...).
+- Instalación automática del core (--auto-core).
+- Autodetección de puerto serie (si no pasas --port).
+- Flags extra para compile y upload.
+- Funciona con AVR (UNO, Nano, Mega...), SAMD, RP2040 y ESP32.
+
+Requisitos:
+- arduino-cli instalado y en PATH.
+"""
+
+from __future__ import annotations
+import argparse
+import json
 import os
 import sys
 import subprocess
-import shlex
-import time
-import atexit
 import shutil
-import hashlib
 from pathlib import Path
+from typing import Dict, Any, Optional, List
 
-import requests
-import serial.tools.list_ports
-from arcompile_version import __version__ as VERSION
+# ------------ Mapa de alias -> FQBN ------------
+BOARD_TO_FQBN: Dict[str, str] = {
+    "uno":       "arduino:avr:uno",
+    "nano":      "arduino:avr:nano",          # Usa --menu cpu=atmega328old si corresponde
+    "mega":      "arduino:avr:mega",
+    "leonardo":  "arduino:avr:leonardo",
+    "mkr1000":   "arduino:samd:mkr1000",
+    "zero":      "arduino:samd:arduino_zero",
+    "pico":      "rp2040:rp2040:rpipico",
+    "esp32":     "esp32:esp32:esp32",         # Genérico ESP32 Dev Module
+}
 
-# ======== CONFIGURACIÓN ========
-REMOTE           = "minecraft_server"
-REMOTE_DIR       = "/home/ubuntu/compilacion_esp32"
-FQBN             = "esp32:esp32:esp32da"
-BAUD             = 921600
-MAX_SIZE         = 1310720   # 1.3 MB
-REPO_VERSION_URL = "https://raw.githubusercontent.com/jaestefaniah27/online_compiler/main/arcompile_version.py"
-# Estimación basada en líneas de código (en segundos por línea)
-TIME_PER_LINE    = 0.02
-# Archivos de log
-COMPILE_LOG      = Path("compile.log")
-ERROR_LOG        = Path("error.log")
-# ===============================
-
-# Tiempo de inicio para cálculo de elapsed
-_start_time = time.time()
-
-@atexit.register
-def _print_elapsed():
-    elapsed = time.time() - _start_time
-    print(f"⏱ Tiempo transcurrido: {elapsed:.1f} s")
+DEFAULT_FQBN = BOARD_TO_FQBN["esp32"]  # Compatibilidad: si no se indica, usar ESP32
 
 
-def run(cmd, **kw):
-    print(f"» {cmd}")
+# ------------ Utilidades OS ------------
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def run(cmd: List[str],
+        check: bool = True,
+        capture_output: bool = False,
+        text: bool = True,
+        env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+    verbose = os.environ.get("ARCOMPILE_VERBOSE", "0") == "1"
+    if verbose:
+        eprint(f"[CMD] {' '.join(cmd)}")
     try:
-        subprocess.run(cmd, shell=True, check=True, **kw)
-    except subprocess.CalledProcessError as e:
-        if e.stderr:
-            ERROR_LOG.write_text(e.stderr, encoding='utf8')
+        return subprocess.run(
+            cmd,
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            env=env
+        )
+    except subprocess.CalledProcessError as ex:
+        if ex.stdout:
+            eprint(ex.stdout)
+        if ex.stderr:
+            eprint(ex.stderr)
         raise
 
 
-def run_capture(cmd):
-    p = subprocess.run(cmd, shell=True, text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if p.stderr:
-        ERROR_LOG.write_text(p.stderr, encoding='utf8')
-    return p.returncode, p.stdout, p.stderr
+def ensure_arduino_cli() -> str:
+    cli = shutil.which("arduino-cli")
+    if not cli:
+        eprint("❌ No se encontró 'arduino-cli' en PATH.")
+        eprint("   Instálalo: https://arduino.github.io/arduino-cli/latest/installation/")
+        sys.exit(127)
+    return cli
 
 
-def puerto_esp32():
-    print("🔍 Buscando puerto ESP32 …")
-    for p in serial.tools.list_ports.comports():
-        if any(t in p.description for t in ("CP210", "Silicon", "USB", "ESP32")):
-            print(f"✔ Detectado {p.device}")
-            return p.device
-    sys.exit("❌ ESP32 no encontrada")
+# ------------ Lógica Arduino CLI ------------
+def parse_core_from_fqbn(fqbn: str) -> str:
+    # "vendor:arch:board[:menu=val,...]" -> "vendor:arch"
+    parts = fqbn.split(":")
+    if len(parts) < 2:
+        raise ValueError(f"FQBN inválido: {fqbn}")
+    return ":".join(parts[:2])
 
 
-def leer_libraries():
-    f = Path("libraries.txt")
-    if not f.exists():
-        return []
-    return [l.strip() for l in f.read_text(encoding="utf8").splitlines() if l.strip()]
+def apply_menu_options_to_fqbn(fqbn: str, menu_list: Optional[List[str]]) -> str:
+    """
+    Añade opciones de menú a la FQBN.
+    menu_list, ej.: ["cpu=atmega328old", "flash=4MB", "psram=enabled"]
+    Resultado: vendor:arch:board:cpu=atmega328old,flash=4MB,psram=enabled
+    """
+    if not menu_list:
+        return fqbn
+    parts = fqbn.split(":")
+    if len(parts) < 3:
+        raise ValueError(f"FQBN incompleto para opciones de menú: {fqbn}")
+    vendor, arch, board = parts[:3]
+    menu = ",".join(menu_list)
+    return f"{vendor}:{arch}:{board}:{menu}"
 
 
-def instalar_librerias(libs):
-    if not libs:
-        return
-    print("• Instalando/actualizando librerías en servidor …")
-    for lib in libs:
-        run(f"ssh {REMOTE} arduino-cli lib install {shlex.quote(lib)} --no-overwrite")
-
-
-def subir_proyecto(remote_proj):
-    run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
-    run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
-    run(f"scp -r * {REMOTE}:{remote_proj}/")
-
-
-def mostrar_ayuda():
-    print(f"""
-arcompile v{VERSION}
-
-Uso:
-  arcompile              → compila y flashea el proyecto automáticamente
-  arcompile min_spiffs   → fuerza el uso del esquema de particiones min_spiffs
-  arcompile help         → muestra esta ayuda
-  arcompile update       → comprueba y actualiza arcompile si hay nueva versión
-""")
-    sys.exit(0)
-
-
-def get_remote_version():
+def ensure_core_installed(cli: str, fqbn: str):
+    core = parse_core_from_fqbn(fqbn)
+    res = run([cli, "core", "list", "--format", "json"], capture_output=True)
     try:
-        resp = requests.get(REPO_VERSION_URL, timeout=5)
-        resp.raise_for_status()
-        for line in resp.text.splitlines():
-            if line.startswith("__version__"):
-                return line.split("=")[1].strip().strip('"').strip("'")
-    except Exception as e:
-        print(f"⚠ No se pudo obtener versión remota: {e}")
-    return None
+        installed = json.loads(res.stdout or "[]")
+    except json.JSONDecodeError:
+        installed = []
+
+    installed_ids = {entry.get("ID") for entry in installed if isinstance(entry, dict)}
+    if core not in installed_ids:
+        eprint(f"➡️  Instalando core '{core}' (primera vez en este host)...")
+        run([cli, "core", "install", core])
 
 
-def realizar_update():
-    remote = get_remote_version()
-    if not remote:
-        sys.exit("❌ No se pudo comprobar la versión remota.")
-    if remote == VERSION:
-        print(f"✔ Ya tienes la última versión ({VERSION}).")
-        sys.exit(0)
-    print(f"🔄 Nueva versión disponible: {remote} → actualizando …")
-    run("pip uninstall -y arcompile")
-    run("pip install --no-cache-dir --force-reinstall git+https://github.com/jaestefaniah27/online_compiler.git")
-    print(f"✅ arcompile actualizado a {remote}")
-    sys.exit(0)
+def autodetect_port(cli: str, fqbn: str) -> Optional[str]:
+    """
+    Usa `arduino-cli board list --format json` y:
+      1) Busca coincidencias con el mismo vendor:arch del fqbn objetivo.
+      2) Si no hay, devuelve el primer puerto serie disponible.
+    """
+    res = run([cli, "board", "list", "--format", "json"], capture_output=True)
+    ports_json = {}
+    try:
+        ports_json = json.loads(res.stdout or "{}")
+    except Exception:
+        pass
 
+    # Estructuras posibles según versión
+    serial_items = ports_json.get("serialBoards") or ports_json.get("ports") or []
+    target_vendor_arch = parse_core_from_fqbn(fqbn)
 
-def estimar_tiempo():
-    total_lineas = 0
-    for ext in (".ino", ".cpp", ".h"):
-        for file in Path.cwd().rglob(f"*{ext}"):
-            try:
-                total_lineas += sum(1 for _ in file.open(encoding='utf8', errors='ignore'))
-            except Exception:
-                continue
-    estimado = total_lineas * TIME_PER_LINE
-    print(f"⏳ Estimación de compilación basada en {total_lineas} líneas: ~{estimado:.1f} s")
-
-
-def compilar_en_servidor(remote_proj, libs, particion=None):
-    ERROR_LOG.write_text("", encoding='utf8')
-    estimar_tiempo()
-    print("🏗 Iniciando compilación")
-    fqbn = FQBN
-    if particion:
-        print(f"• Forzando particiones: {particion}")
-        fqbn = f"{FQBN}:PartitionScheme={particion}"
-
-    compile_cmd = (
-        f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
-        f"--fqbn {shlex.quote(fqbn)} "
-        f"{shlex.quote(remote_proj)} --export-binaries"
-    )
-
-    for intento in (1, 2):
-        code, out, err = run_capture(compile_cmd)
-        if code == 0:
-            print("✓ Compilación exitosa")
-            return fqbn, out + err
-        if intento == 1 and "No such file or directory" in err:
-            print("⚠ Faltan librerías → instalando y reintentando …")
-            instalar_librerias(libs)
+    first_serial = None
+    for item in serial_items:
+        # Soportar dos formatos
+        address = item.get("address") or item.get("port", {}).get("address")
+        if not address:
             continue
-        print(out + err)
-        sys.exit("❌ Compilación abortada")
+        if not first_serial:
+            first_serial = address
+
+        boards = item.get("boards") or item.get("matchingBoards") or []
+        for b in boards:
+            # b puede tener "FQBN" o "platform"
+            bfqbn = b.get("FQBN")
+            platform = b.get("platform")
+            if bfqbn and parse_core_from_fqbn(bfqbn) == target_vendor_arch:
+                return address
+            if platform and platform.get("id") == target_vendor_arch:
+                return address
+
+    return first_serial  # si no hay match, al menos un puerto
 
 
-def binario_excede_tamano(salida):
-    for linea in salida.splitlines():
-        if "Sketch uses" in linea and "Maximum is" in linea:
-            try:
-                usado = int(linea.split("Sketch uses")[1].split("bytes")[0].strip().replace(",", ""))
-                print(f"• Binario ocupa {usado} bytes")
-                return usado > MAX_SIZE
-            except:
-                pass
-    return False
+def find_sketch_dir(user_path: Optional[str]) -> Path:
+    """
+    Determina el directorio del sketch:
+    - Si user_path es archivo .ino/.cpp => usa su carpeta.
+    - Si es carpeta => úsala (debe contener .ino principal).
+    - Si None => carpeta actual.
+    """
+    if user_path:
+        p = Path(user_path).resolve()
+    else:
+        p = Path.cwd().resolve()
+
+    if p.is_file():
+        return p.parent
+    return p
 
 
-def descargar_binarios(build_remote):
-    out_dir = Path("binarios")
-    out_dir.mkdir(exist_ok=True)
-
-    scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.bin binarios/"
-    run(scp_cmd)
-
-    local_files = {}
-    for archivo in out_dir.glob("*.bin"):
-        name = archivo.name.lower()
-        if "bootloader" in name:
-            local_files["bootloader"] = archivo
-        elif "partition" in name:
-            local_files["partitions"] = archivo
-        elif "app0" in name:
-            local_files["boot_app0"] = archivo
-        elif name.endswith(".ino.bin"):
-            local_files["application"] = archivo
-
-    if "boot_app0" not in local_files:
-        print("• Descargando boot_app0.bin …")
-        ruta = subprocess.check_output(
-            f'ssh {REMOTE} "find ~/.arduino15 -name boot_app0.bin -print -quit"',
-            shell=True, text=True
-        ).strip()
-        if ruta:
-            run(f"scp {REMOTE}:{shlex.quote(ruta)} binarios/boot_app0.bin")
-            local_files["boot_app0"] = Path("binarios") / "boot_app0.bin"
-        else:
-            sys.exit("❌ No se encontró boot_app0.bin en el servidor")
-
-    print("✅ Binarios descargados en ./binarios/")
-    return local_files
+def default_build_path(sketch_dir: Path) -> Path:
+    # Ubica los binarios en <sketch_dir>/build
+    return sketch_dir / "build"
 
 
-def hash_proyecto():
-    sha = hashlib.sha256()
-    for path in sorted(Path.cwd().rglob("*")):
-        if path.is_file() and path.suffix in {".ino", ".cpp", ".h", ".txt"}:
-            sha.update(path.read_bytes())
-    return sha.hexdigest()
+def compile_sketch(cli: str,
+                   fqbn: str,
+                   sketch_dir: Path,
+                   build_path: Path,
+                   extra_flags: Optional[List[str]] = None) -> None:
+    cmd = [
+        cli, "compile",
+        "--fqbn", fqbn,
+        "--build-path", str(build_path),
+        "--export-binaries",
+        str(sketch_dir)
+    ]
+    if extra_flags:
+        cmd.extend(extra_flags)
+    eprint(f"🛠️  Compilando para {fqbn} ...")
+    run(cmd)
+
+
+def upload_sketch(cli: str,
+                  fqbn: str,
+                  sketch_dir: Path,
+                  port: Optional[str],
+                  extra_upload_flags: Optional[List[str]] = None) -> None:
+    cmd = [
+        cli, "upload",
+        "--fqbn", fqbn,
+        str(sketch_dir)
+    ]
+    if port:
+        cmd.extend(["-p", port])
+    if extra_upload_flags:
+        cmd.extend(extra_upload_flags)
+    eprint(f"⬆️  Subiendo a {port or '(auto)'} ...")
+    run(cmd)
+
+
+# ------------ CLI ------------
+def build_argparser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Compilador/subidor en línea para placas Arduino/ESP32 usando arduino-cli (sin .json)."
+    )
+    g_board = p.add_argument_group("Selección de placa")
+    g_board.add_argument("--fqbn", help="FQBN completo (p.ej. arduino:avr:uno)")
+    g_board.add_argument("--board",
+                         choices=list(BOARD_TO_FQBN.keys()),
+                         help="Alias de placa (convierte a FQBN).")
+    g_board.add_argument("--menu", nargs="*", default=None,
+                         help="Opciones de menú: 'clave=valor' separadas por espacio (ej: --menu cpu=atmega328old).")
+
+    g_paths = p.add_argument_group("Rutas")
+    g_paths.add_argument("--sketch-dir", help="Directorio del sketch o ruta a un .ino/.cpp. Por defecto, cwd.")
+    g_paths.add_argument("--build-path", help="Directorio de build. Por defecto, <sketch>/build")
+
+    g_serial = p.add_argument_group("Serial/Upload")
+    g_serial.add_argument("--port", help="Puerto serie (ej: /dev/ttyACM0, COM3). Si se omite, intenta autodetectar.")
+    g_serial.add_argument("--no-upload", action="store_true", help="Compila sin subir al dispositivo.")
+
+    g_auto = p.add_argument_group("Automatización")
+    g_auto.add_argument("--auto-core", action="store_true",
+                        help="Instala automáticamente el core del FQBN si falta.")
+
+    g_extra = p.add_argument_group("Flags extra")
+    g_extra.add_argument("--extra-arduino-flags", nargs="*", default=None,
+                         help="Flags extra para 'arduino-cli compile'.")
+    g_extra.add_argument("--extra-upload-flags", nargs="*", default=None,
+                         help="Flags extra para 'arduino-cli upload'.")
+
+    return p
 
 
 def main():
-    start = time.time()
-    args = [a.lower() for a in sys.argv[1:]]
+    args = build_argparser().parse_args()
 
-    if any(a in ("help", "-h", "--help") for a in args):
-        mostrar_ayuda()
+    cli = ensure_arduino_cli()
 
-    if "update" in args:
-        realizar_update()
+    # Resolver FQBN
+    fqbn = args.fqbn
+    if not fqbn and args.board:
+        fqbn = BOARD_TO_FQBN.get(args.board)
+    if not fqbn:
+        fqbn = DEFAULT_FQBN  # compat: ESP32 por defecto
 
-    particion = "min_spiffs" if "min_spiffs" in args else None
+    # Aplicar opciones de menú a la FQBN (si las hay)
+    try:
+        fqbn = apply_menu_options_to_fqbn(fqbn, args.menu)
+    except ValueError as ex:
+        eprint(f"❌ {ex}")
+        sys.exit(2)
 
-    sketch_dir  = Path.cwd()
-    sketch_name = sketch_dir.name + ".ino"
-    ino_path    = sketch_dir / sketch_name
-    if not ino_path.exists():
-        sys.exit(f"❌ No se encontró {sketch_name}")
+    # Instalar core si se pide
+    if args.auto_core:
+        try:
+            ensure_core_installed(cli, fqbn)
+        except subprocess.CalledProcessError:
+            eprint("❌ Falló la instalación del core. Revisa los package indexes y tu conexión.")
+            sys.exit(1)
 
-    libs = leer_libraries()
-    com  = puerto_esp32()
+    # Rutas
+    sketch_dir = find_sketch_dir(args.sketch_dir)
+    if not sketch_dir.exists():
+        eprint(f"❌ Sketch no encontrado: {sketch_dir}")
+        sys.exit(2)
 
-    hash_actual   = hash_proyecto()
-    hash_file     = Path(".build_hash")
-    hash_anterior = hash_file.read_text() if hash_file.exists() else ""
+    build_path = Path(args.build_path).resolve() if args.build_path else default_build_path(sketch_dir)
+    build_path.mkdir(parents=True, exist_ok=True)
 
-    if hash_actual != hash_anterior:
-        print("🛠 Compilación necesaria")
-        remote_proj = f"{REMOTE_DIR}/{sketch_dir.name}"
-        subir_proyecto(remote_proj)
+    # Compilar
+    try:
+        compile_sketch(cli, fqbn, sketch_dir, build_path, args.extra_arduino_flags)
+    except subprocess.CalledProcessError:
+        eprint("❌ Error de compilación.")
+        sys.exit(1)
 
-        used_fqbn, salida = compilar_en_servidor(remote_proj, libs, particion)
+    if args.no_upload:
+        eprint("✅ Compilación finalizada (sin subir).")
+        return
 
-        if not particion and binario_excede_tamano(salida):
-            print("⚠ Binario >1.3MB → reintentando con min_spiffs")
-            used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs")
-            particion = "min_spiffs"
+    # Puerto
+    port = args.port
+    if not port:
+        try:
+            port = autodetect_port(cli, fqbn)
+        except subprocess.CalledProcessError:
+            port = None
 
-        COMPILE_LOG.write_text(salida, encoding="utf8")
-        print(f"ℹ Salida de compilación guardada en {COMPILE_LOG}")
+    if not port:
+        eprint("⚠️  No se pudo autodetectar el puerto. "
+               "Conecta la placa y usa --port /dev/ttyACM0 (o COMx).")
 
-        print("🔍 Detectando carpeta de build en el servidor…")
-        out = subprocess.check_output(
-            f"ssh {REMOTE} ls {shlex.quote(remote_proj)}/build",
-            shell=True, text=True
-        ).split()
-        if not out:
-            sys.exit("❌ No se encontró ningún subdirectorio en build/")
-        carpeta_build = out[0].strip()
-        build_remote = f"{remote_proj}/build/{carpeta_build}"
+    # Subir
+    try:
+        upload_sketch(cli, fqbn, sketch_dir, port, args.extra_upload_flags)
+        eprint("✅ Subida completada.")
+    except subprocess.CalledProcessError:
+        eprint("❌ Error al subir al dispositivo.")
+        sys.exit(1)
 
-        bin_files = descargar_binarios(build_remote)
-        hash_file.write_text(hash_actual)
-    else:
-        print("⚡ Usando binarios ya compilados")
-        out_dir = Path("binarios")
-        bin_files = {
-            "bootloader":   out_dir / f"{sketch_name}.bootloader.bin",
-            "partitions":   out_dir / f"{sketch_name}.partitions.bin",
-            "application":  out_dir / f"{sketch_name}.bin",
-            "boot_app0":    out_dir / "boot_app0.bin",
-        }
-        for k, f in bin_files.items():
-            if not f.exists():
-                sys.exit(f"❌ Falta el binario requerido: {f}")
-
-    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
-    flash_cmd = (
-        f"{esptool} --chip esp32 --port {com} --baud {BAUD} write_flash -z "
-        f"0x1000 {bin_files['bootloader']} "
-        f"0x8000 {bin_files['partitions']} "
-        f"0xe000 {bin_files['boot_app0']} "
-        f"0x10000 {bin_files['application']}"
-    )
-    run(flash_cmd)
-
-    print(f"✅ Terminado en {time.time() - start:.1f} s")
 
 if __name__ == "__main__":
     main()
