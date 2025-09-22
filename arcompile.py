@@ -9,6 +9,7 @@ import atexit
 import shutil
 import hashlib
 from pathlib import Path
+from typing import Optional, Tuple, Dict
 
 import requests
 import serial.tools.list_ports
@@ -18,7 +19,7 @@ from arcompile_version import __version__ as VERSION
 REMOTE           = "minecraft_server"
 REMOTE_DIR       = "/home/ubuntu/compilacion_esp32"
 
-# FQBN por defecto (puedes sobreescribirlo desde CLI: esp32c3 / s3 / dev / da / fqbn=...)
+# FQBN por defecto (puedes sobreescribirlo desde CLI: esp32c3 / s3 / dev / da / micro / fqbn=...)
 FQBN_DEFAULT     = "esp32:esp32:esp32"
 
 BAUD             = 921600
@@ -33,15 +34,17 @@ ERROR_LOG        = Path("error.log")
 
 # Mapeos útiles
 BOARD_ALIASES = {
-    "dev":  "esp32:esp32:esp32",
-    "da":   "esp32:esp32:esp32da",
-    "c3":   "esp32:esp32:esp32c3",
-    "esp32c3": "esp32:esp32:esp32c3",
-    "s3":   "esp32:esp32:esp32s3",
-    "esp32s3": "esp32:esp32:esp32s3",
+    "dev":       "esp32:esp32:esp32",
+    "da":        "esp32:esp32:esp32da",
+    "c3":        "esp32:esp32:esp32c3",
+    "esp32c3":   "esp32:esp32:esp32c3",
+    "s3":        "esp32:esp32:esp32s3",
+    "esp32s3":   "esp32:esp32:esp32s3",
+    # NUEVO: Arduino Micro (ATmega32U4)
+    "micro":     "arduino:avr:micro",
 }
 
-# Offsets de flasheo por familia
+# Offsets de flasheo por familia ESP32
 FLASH_LAYOUT = {
     # ESP32 clásico / DA
     "esp32": {
@@ -65,6 +68,7 @@ FLASH_LAYOUT = {
         "application":0x10000,
         "use_boot_app0": False
     },
+    # Nota: familia "avr" no usa esptool ni offsets
 }
 
 # Tiempo de inicio para cálculo de elapsed
@@ -105,9 +109,9 @@ def puerto_esp32():
 
 # === NUEVO: versión opcional que NO aborta si no hay puerto ===
 def puerto_esp32_optional():
-    print("🔍 Buscando puerto ESP32 (opcional) …")
+    print("🔍 Buscando puerto (opcional) …")
     for p in serial.tools.list_ports.comports():
-        if any(t in p.description for t in ("CP210", "Silicon", "USB", "ESP32", "CH340", "CDC")):
+        if any(t in p.description for t in ("CP210", "Silicon", "USB", "ESP32", "CH340", "CDC", "Arduino", "CDC")):
             print(f"✔ Detectado {p.device}")
             return p.device
     print("⚠ No se detectó puerto. Se continuará sin flashear.")
@@ -142,18 +146,19 @@ arcompile v{VERSION}
 
 Uso:
   arcompile                    → compila y flashea (FQBN por defecto)
-  arcompile dev|da|esp32c3|c3|esp32s3|s3
-                               → selecciona FQBN rápido por alias
+  arcompile dev|da|esp32c3|c3|esp32s3|s3|micro
+                               → selecciona FQBN rápido por alias (incluye Arduino Micro)
   arcompile fqbn=<VENDOR:ARCH:BOARD>
                                → usa un FQBN exacto
-  arcompile min_spiffs         → fuerza particiones min_spiffs
+  arcompile min_spiffs         → (ESP32) fuerza particiones min_spiffs
   arcompile update             → actualiza arcompile
   arcompile help               → esta ayuda
 
 Ejemplos:
   arcompile esp32c3
   arcompile fqbn=esp32:esp32:esp32c3
-  arcompile s3 min_spiffs
+  arcompile micro
+  arcompile fqbn=arduino:avr:micro
 """)
     sys.exit(0)
 
@@ -201,7 +206,9 @@ def compilar_en_servidor(remote_proj, libs, particion=None, fqbn_base=None):
     estimar_tiempo()
     print("🏗 Iniciando compilación")
     fqbn = fqbn_base or FQBN_DEFAULT
-    if particion:
+
+    # Particiones sólo aplican a ESP32
+    if particion and fqbn.startswith("esp32:"):
         print(f"• Forzando particiones: {particion}")
         fqbn = f"{fqbn}:PartitionScheme={particion}"
 
@@ -236,27 +243,29 @@ def binario_excede_tamano(salida):
     return False
 
 
-def descargar_binarios(build_remote, sketch_name):
+def descargar_binarios(build_remote, sketch_name) -> Dict[str, Path]:
     out_dir = Path("binarios")
     out_dir.mkdir(exist_ok=True)
 
-    scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.bin binarios/"
+    # Descargar tanto .bin (ESP32) como .hex (AVR)
+    scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.* binarios/"
     run(scp_cmd)
 
-    local_files = {}
-    for archivo in out_dir.glob("*.bin"):
+    local_files: Dict[str, Path] = {}
+    for archivo in out_dir.glob("*.*"):
         name = archivo.name.lower()
-        if "bootloader" in name:
+        if name.endswith(".hex"):
+            local_files["application_hex"] = archivo
+        elif "bootloader" in name and name.endswith(".bin"):
             local_files["bootloader"] = archivo
-        elif "partition" in name:
+        elif "partition" in name and name.endswith(".bin"):
             local_files["partitions"] = archivo
-        elif "app0" in name:
+        elif "app0" in name and name.endswith(".bin"):
             local_files["boot_app0"] = archivo
         elif name.endswith(".ino.bin") or name == f"{sketch_name}.bin".lower():
             local_files["application"] = archivo
 
-    # boot_app0 es necesario sólo para ESP32 clásico; si no está, lo intentaremos más tarde según layout
-    print("✅ Binarios descargados en ./binarios/")
+    print("✅ Artefactos descargados en ./binarios/")
     return local_files
 
 
@@ -271,7 +280,7 @@ def hash_proyecto():
 def resolver_fqbn_desde_args(args_list):
     """
     Soporta:
-      - aliases: dev | da | esp32c3 | c3 | esp32s3 | s3
+      - aliases: dev | da | esp32c3 | c3 | esp32s3 | s3 | micro
       - fqbn=VENDOR:ARCH:BOARD
       - si no hay nada, usa FQBN_DEFAULT
     """
@@ -286,12 +295,18 @@ def resolver_fqbn_desde_args(args_list):
 
 def familia_chip_de_fqbn(fqbn: str) -> str:
     """
-    Devuelve la familia: 'esp32', 'esp32c3', 'esp32s3' (por defecto 'esp32')
+    Devuelve la familia: 'esp32', 'esp32c3', 'esp32s3' o 'avr' (Arduino AVR).
     """
     try:
-        board = fqbn.split(":")[2].lower()
+        vendor, arch, board = fqbn.split(":")
+        vendor = vendor.lower()
+        arch   = arch.lower()
+        board  = board.lower()
     except Exception:
-        board = ""
+        vendor, arch, board = "", "", ""
+
+    if arch == "avr" or vendor == "arduino":
+        return "avr"
     if "c3" in board:
         return "esp32c3"
     if "s3" in board:
@@ -301,9 +316,11 @@ def familia_chip_de_fqbn(fqbn: str) -> str:
 
 def construir_flash_cmd(esptool, com, baud, files, family):
     """
-    Construye el comando esptool write_flash con offsets correctos por familia.
-    Nota: no se usa --chip para permitir autodetección y evitar errores.
+    Construye el comando esptool write_flash con offsets correctos por familia (ESP32*).
+    Para AVR no se usa esptool: se sube con arduino-cli upload --input-dir.
     """
+    if family == "avr":
+        raise RuntimeError("construir_flash_cmd no aplica a AVR")
     layout = FLASH_LAYOUT.get(family, FLASH_LAYOUT["esp32"])
 
     parts = []
@@ -324,7 +341,7 @@ def construir_flash_cmd(esptool, com, baud, files, family):
         parts += [f"0x{layout['application']:x}", str(files["application"])]
 
     if not parts:
-        sys.exit("❌ No se encontraron binarios para flashear.")
+        sys.exit("❌ No se encontraron binarios para flashear (ESP32).")
 
     # Sin --chip → esptool auto-detecta (evita 'Wrong --chip argument?')
     flash_cmd = (
@@ -354,9 +371,9 @@ def write_meta(dirpath: Path, fqbn: str, family: str):
 def read_meta(dirpath: Path) -> dict:
     meta = dirpath / ".meta"
     if not meta.exists():
-        # fallback: intenta deducir familia por presencia de boot_app0
         info = {}
-        info["FAMILY"] = "esp32" if (dirpath/"main.ino.bootloader.bin").exists() and (dirpath/"boot_app0.bin").exists() else "esp32c3"
+        # heurística mínima por presencia de archivos
+        info["FAMILY"] = "avr" if any(p.suffix == ".hex" for p in dirpath.glob("*.*")) else "esp32"
         info["FQBN"] = ""
         return info
     d = {}
@@ -375,10 +392,10 @@ def save_release(name: str, fqbn: str, family: str):
         sys.exit(f"❌ Ya existe releases/{name}. Elige otro nombre.")
     dst.mkdir(parents=True)
 
-    # copia ficheros relevantes si existen
+    # Copia archivos relevantes
     copied = 0
+    # ESP32 típicos:
     for fn in ["main.ino.bootloader.bin", "main.ino.partitions.bin", "main.ino.bin", "boot_app0.bin",
-               # por si tus nombres cambian:
                f"{Path.cwd().name}.ino.bootloader.bin",
                f"{Path.cwd().name}.ino.partitions.bin",
                f"{Path.cwd().name}.ino.bin"]:
@@ -387,43 +404,67 @@ def save_release(name: str, fqbn: str, family: str):
             shutil.copy2(f, dst / f.name)
             copied += 1
 
+    # AVR: .hex
+    for fn in ["main.ino.hex", f"{Path.cwd().name}.ino.hex", f"{Path.cwd().name}.hex"]:
+        f = src / fn
+        if f.exists():
+            shutil.copy2(f, dst / f.name)
+            copied += 1
+
     if copied == 0:
-        sys.exit("❌ No se encontraron binarios en ./binarios para guardar.")
+        sys.exit("❌ No se encontraron artefactos en ./binarios para guardar.")
 
     write_meta(dst, fqbn, family)
     print(f"✅ Guardado en releases/{name}")
 
-def load_release_bins(name: str) -> (dict, str):
+def load_release_bins(name: str) -> Tuple[Dict[str, Path], str]:
     rdir = releases_dir() / name
     if not rdir.exists():
         sys.exit(f"❌ No existe releases/{name}")
     meta = read_meta(rdir)
     family = meta.get("FAMILY", "esp32")
 
-    files = {}
-    # admite ambos prefijos (main.ino.* o <sketch>.ino.*)
-    candidates = list(rdir.glob("*.bin"))
+    files: Dict[str, Path] = {}
+    candidates = list(rdir.glob("*.*"))
     for archivo in candidates:
         low = archivo.name.lower()
-        if "bootloader" in low:
+        if low.endswith(".hex"):
+            files["application_hex"] = archivo
+        elif "bootloader" in low and low.endswith(".bin"):
             files["bootloader"] = archivo
-        elif "partition" in low:
+        elif "partition" in low and low.endswith(".bin"):
             files["partitions"] = archivo
-        elif "app0" in low:
+        elif "app0" in low and low.endswith(".bin"):
             files["boot_app0"] = archivo
         elif low.endswith(".ino.bin"):
             files["application"] = archivo
-
-    if "application" not in files:
-        # intenta encontrar *.bin si no incluye .ino
-        app = [p for p in candidates if p.name.endswith(".bin") and "partition" not in p.name and "bootloader" not in p.name and "app0" not in p.name]
-        if app:
-            files["application"] = app[0]
+        elif low.endswith(".bin") and all(t not in low for t in ("partition","bootloader","app0")):
+            # fallback .bin de aplicación
+            files["application"] = archivo
 
     return files, family
 
-def flash_release(name: str, port: str|None, baud: int):
+def flash_release(name: str, port: Optional[str], baud: int):
     files, family = load_release_bins(name)
+    if family == "avr":
+        # Para AVR usamos arduino-cli upload con --input-dir
+        fqbn = "arduino:avr:micro"  # por defecto razonable; idealmente leer de .meta
+        if (releases_dir()/name/".meta").exists():
+            meta = read_meta(releases_dir()/name)
+            if meta.get("FQBN"):
+                fqbn = meta["FQBN"]
+        com = port or puerto_esp32()
+        cmd = (
+            f"arduino-cli upload --fqbn {shlex.quote(fqbn)} "
+            f"-p {shlex.quote(com)} "
+            f"--input-dir {shlex.quote(str((releases_dir()/name).resolve()))} "
+            f"{shlex.quote(str(Path.cwd().resolve()))}"
+        )
+        run(cmd)
+        print(f"✅ Flash AVR de release '{name}' completado en {com}")
+        return
+
+    # ESP32
     esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
     com = port or puerto_esp32()
     cmd = construir_flash_cmd(esptool, com, baud, files, family)
@@ -439,18 +480,11 @@ def main():
     if args and args[0].lower() == "save":
         if len(args) < 2:
             sys.exit("Uso: arcompile save <nombre_release>")
-        # necesitamos saber fqbn/family actuales; si no acabas de compilar, deducimos por FQBN_DEFAULT
-        fqbn_base = resolver_fqbn_desde_args(args[2:])  # por si el user pasa esp32c3 aquí también
+        fqbn_base = resolver_fqbn_desde_args(args[2:])
         family = familia_chip_de_fqbn(fqbn_base)
-        # mejor: intenta leer compile.log para el FQBN real si existe
         try:
-            # formato típico de arduino-cli en compile.log (opcional)
             with open(COMPILE_LOG, "r", encoding="utf8") as f:
-                txt = f.read()
-                for token in ("--fqbn", "FQBN:"):
-                    if token in txt:
-                        # no siempre está, así que es best-effort
-                        pass
+                _ = f.read()
         except Exception:
             pass
         save_release(args[1], fqbn_base, family)
@@ -473,8 +507,10 @@ def main():
 
     # Procesa selección de FQBN desde CLI
     fqbn_base = resolver_fqbn_desde_args(args)
+    used_fqbn  = fqbn_base  # se actualizará en compilación si aplica
+    used_family = familia_chip_de_fqbn(fqbn_base)
 
-    particion = "min_spiffs" if "min_spiffs" in args else None
+    particion = "min_spiffs" if ("min_spiffs" in args and used_family != "avr") else None
 
     sketch_dir  = Path.cwd()
     sketch_name = sketch_dir.name + ".ino"
@@ -484,9 +520,7 @@ def main():
 
     libs = leer_libraries()
 
-    # === CAMBIO CLAVE: NO detectamos puerto aquí. Compilamos SIEMPRE. ===
-    # com  = puerto_esp32()   ← Eliminado
-
+    # === Compilar SIEMPRE, sin requerir puerto conectado ===
     hash_actual   = hash_proyecto()
     hash_file     = Path(".build_hash")
     hash_anterior = hash_file.read_text() if hash_file.exists() else ""
@@ -498,7 +532,8 @@ def main():
 
         used_fqbn, salida = compilar_en_servidor(remote_proj, libs, particion, fqbn_base=fqbn_base)
 
-        if not particion and binario_excede_tamano(salida):
+        # Sólo aplica a ESP32
+        if used_family != "avr" and not particion and binario_excede_tamano(salida):
             print("⚠ Binario >1.3MB → reintentando con min_spiffs")
             used_fqbn, salida = compilar_en_servidor(remote_proj, libs, "min_spiffs", fqbn_base=fqbn_base)
             particion = "min_spiffs"
@@ -520,44 +555,61 @@ def main():
         hash_file.write_text(hash_actual)
         used_family = familia_chip_de_fqbn(used_fqbn)
     else:
-        print("⚡ Usando binarios ya compilados")
+        print("⚡ Usando artefactos ya compilados")
         out_dir = Path("binarios")
-        bin_files = {
-            "bootloader":   out_dir / f"{sketch_name}.bootloader.bin",
-            "partitions":   out_dir / f"{sketch_name}.partitions.bin",
-            "application":  out_dir / f"{sketch_name}.bin",
-            "boot_app0":    out_dir / "boot_app0.bin",
-        }
-        for k, f in bin_files.items():
-            # Es posible que boot_app0 no exista para C3/S3; no abortar por eso
-            if k != "boot_app0" and not f.exists():
-                sys.exit(f"❌ Falta el binario requerido: {f}")
-        # Cuando reutilizamos binarios, asumimos la familia por FQBN seleccionado
-        used_family = familia_chip_de_fqbn(resolver_fqbn_desde_args(args))
+        if used_family == "avr":
+            # AVR: .hex
+            cand_hex = [out_dir / f"{sketch_name}.hex",
+                        out_dir / f"{sketch_name}.ino.hex",
+                        out_dir / f"{Path.cwd().name}.ino.hex",
+                        out_dir / f"{Path.cwd().name}.hex"]
+            app_hex = next((p for p in cand_hex if p.exists()), None)
+            if not app_hex:
+                sys.exit("❌ Falta el .hex necesario en ./binarios para AVR.")
+            bin_files = {"application_hex": app_hex}
+        else:
+            # ESP32: .bin
+            bin_files = {
+                "bootloader":   out_dir / f"{sketch_name}.bootloader.bin",
+                "partitions":   out_dir / f"{sketch_name}.partitions.bin",
+                "application":  out_dir / f"{sketch_name}.bin",
+                "boot_app0":    out_dir / "boot_app0.bin",
+            }
+            for k, f in bin_files.items():
+                if k != "boot_app0" and not f.exists():
+                    sys.exit(f"❌ Falta el binario requerido: {f}")
 
-    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
-
-    # === CAMBIO CLAVE: Detectamos puerto SÓLO AHORA. Si no hay, no flasheamos. ===
+    # === Flasheo (sólo si hay puerto disponible ahora) ===
     com_final = puerto_esp32_optional()
     if not com_final:
-        print("🚫 No se detectó puerto. La compilación y descarga de binarios se han completado correctamente.")
-        print("📦 Binarios listos en ./binarios/")
+        print("🚫 No se detectó puerto. La compilación/descarga de artefactos se han completado correctamente.")
+        print("📦 Artefactos listos en ./binarios/")
         print("▶ Cuando conectes la placa, vuelve a ejecutar el comando para flashear directamente (sin recompilar).")
-        # Señalizamos fallo SOLO en la fase de flasheo:
         sys.exit(2)
 
-    flash_cmd = construir_flash_cmd(
-        esptool=esptool,
-        com=com_final,
-        baud=BAUD,
-        files=bin_files,
-        family=used_family
-    )
-
-    run(flash_cmd)
+    if used_family == "avr":
+        # Subida con arduino-cli usando artefactos .hex en ./binarios
+        cmd = (
+            f"arduino-cli upload --fqbn {shlex.quote(used_fqbn)} "
+            f"-p {shlex.quote(com_final)} "
+            f"--input-dir {shlex.quote(str(Path('binarios').resolve()))} "
+            f"{shlex.quote(str(Path.cwd().resolve()))}"
+        )
+        run(cmd)
+    else:
+        esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
+        flash_cmd = construir_flash_cmd(
+            esptool=esptool,
+            com=com_final,
+            baud=BAUD,
+            files=bin_files,
+            family=used_family
+        )
+        run(flash_cmd)
 
     print(f"✅ Terminado en {time.time() - start:.1f} s")
 
 
 if __name__ == "__main__":
     main()
+# EOF
