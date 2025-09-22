@@ -72,8 +72,68 @@ FLASH_LAYOUT = {
     # Nota: familia "avr" no usa esptool ni offsets
 }
 
+SSH_BASE_OPTS = (
+    "-o BatchMode=yes "
+    "-o StrictHostKeyChecking=no "
+    "-o UserKnownHostsFile=/dev/null "
+    "-o ConnectTimeout=6 "
+    "-o ServerAliveInterval=5 "
+    "-o ServerAliveCountMax=1 "
+    "-o ConnectionAttempts=1"
+)
+
+SCP_BASE_OPTS = SSH_BASE_OPTS  # mismas opciones aplican a scp
+
 # Tiempo de inicio para cálculo de elapsed
 _start_time = time.time()
+
+def run_retry(cmd: str, attempts: int = 3, timeout: int = 30, sleep_between: float = 1.0):
+    """
+    Ejecuta un comando con timeout y reintentos.
+    - timeout: segundos para matar el proceso si se cuelga
+    - attempts: número de intentos totales
+    """
+    last_err = None
+    for i in range(1, attempts + 1):
+        print("»", cmd)
+        try:
+            subprocess.run(cmd, shell=True, check=True, timeout=timeout)
+            return
+        except subprocess.TimeoutExpired as e:
+            print(f"⏳ Timeout (t={timeout}s) en intento {i}/{attempts}. Reintentando…")
+            last_err = e
+        except subprocess.CalledProcessError as e:
+            print(f"⚠ Error de proceso en intento {i}/{attempts}: {e}. Reintentando…")
+            last_err = e
+        time.sleep(sleep_between)
+    # Si llega aquí, falló todos los intentos
+    raise last_err
+
+def ssh_exec(remote_cmd: str, attempts: int = 3, timeout: int = 20):
+    """
+    Ejecuta un comando remoto por ssh con opciones robustas, timeout y reintentos.
+    """
+    cmd = f"ssh {SSH_BASE_OPTS} {REMOTE} {remote_cmd}"
+    return run_retry(cmd, attempts=attempts, timeout=timeout)
+
+def scp_upload_many(local_paths: list[str], remote_dir: str, attempts: int = 3, timeout: int = 60):
+    """
+    Sube muchos archivos en un solo scp a un directorio remoto.
+    - local_paths: rutas locales (se citarán con comillas dobles para Windows)
+    - remote_dir: directorio remoto de destino (sin comillas internas)
+    """
+    if not local_paths:
+        return
+    def q_local(p: str) -> str:
+        # comillas dobles para Windows PowerShell/cmd
+        return f"\"{p.replace('\"', r'\\\"')}\""
+    srcs = " ".join(q_local(p) for p in local_paths)
+    dest = f'{REMOTE}:"{remote_dir.rstrip("/")}/"'
+    cmd = f"scp {SCP_BASE_OPTS} {srcs} {dest}"
+    return run_retry(cmd, attempts=attempts, timeout=timeout)
+
+
+
 
 @atexit.register
 def _print_elapsed():
@@ -139,15 +199,11 @@ def instalar_librerias(libs):
 def subir_proyecto(remote_proj):
     """
     Sube SOLO .ino, .h, .cpp (desde subcarpetas) y libraries.txt (si existe),
-    a la carpeta remota raíz, TODO en un ÚNICO comando `scp`.
-    - Aplana: en el servidor quedan en remote_proj/<basename>
-    - Detecta colisiones de nombre y aborta si las hay
+    a la carpeta remota raíz, TODO en un ÚNICO comando `scp`, con timeouts y reintentos.
     """
-    import os
-
-    # Prepara carpeta remota
-    run(f"ssh {REMOTE} rm -rf {remote_proj}")
-    run(f"ssh {REMOTE} mkdir -p {remote_proj}")
+    # Prepara carpeta remota (con timeout+retries)
+    ssh_exec(f"rm -rf {shlex.quote(remote_proj)}", attempts=2, timeout=10)
+    ssh_exec(f"mkdir -p {shlex.quote(remote_proj)}", attempts=2, timeout=10)
 
     exts = ("*.ino", "*.h", "*.cpp")
     ignore_dirs = {".git", ".vscode", "__pycache__", "binarios", "releases"}
@@ -171,7 +227,7 @@ def subir_proyecto(remote_proj):
     if not files:
         sys.exit("❌ No hay archivos .ino, .h, .cpp ni libraries.txt para subir.")
 
-    # Detectar colisiones al aplanar (mismo basename en rutas distintas)
+    # Detectar colisiones al aplanar
     by_name = {}
     duplicates = []
     for f in files:
@@ -187,23 +243,9 @@ def subir_proyecto(remote_proj):
             print(f"   - {name}: {a}  <->  {b}")
         sys.exit("Renombra los archivos duplicados antes de subir.")
 
-    # --- Construir un ÚNICO scp con todos los paths locales ---
-    # Nota importante (Windows):
-    # - NO usamos shlex.quote para rutas locales (mete comillas simples que rompen en cmd.exe).
-    # - En su lugar, usamos comillas dobles para cada ruta local.
-    def q_local(p: Path) -> str:
-        s = str(p)
-        # Escapar comillas dobles si existieran (raro, pero por seguridad)
-        s = s.replace('"', r'\"')
-        return f'"{s}"'
-
-    local_args = " ".join(q_local(p) for p in by_name.values())
-    # Destino remoto: una carpeta. No hace falta repetir nombre de archivo (scp usará el basename).
-    # Evitamos espacios → si tu ruta remota puede tenerlos, usa comillas dobles tras los dos puntos.
-    remote_dest = f'{REMOTE}:"{remote_proj}/"'
-
-    # Un solo viaje:
-    run(f"scp {local_args} {remote_dest}")
+    # Construir lista de rutas locales y subir en un ÚNICO scp (rápido)
+    local_paths = [str(p) for p in by_name.values()]
+    scp_upload_many(local_paths, remote_proj, attempts=3, timeout=90)
 
 
 def mostrar_ayuda():
@@ -279,7 +321,7 @@ def compilar_en_servidor(remote_proj, libs, particion=None, fqbn_base=None):
         fqbn = f"{fqbn}:PartitionScheme={particion}"
 
     compile_cmd = (
-        f"ssh {REMOTE} /usr/local/bin/arduino-cli compile "
+        f"ssh {SSH_BASE_OPTS} {REMOTE} /usr/local/bin/arduino-cli compile "
         f"--fqbn {shlex.quote(fqbn)} "
         f"{shlex.quote(remote_proj)} --export-binaries"
     )
@@ -316,7 +358,7 @@ def descargar_binarios(build_remote, sketch_name) -> Dict[str, Path]:
     out_dir.mkdir(exist_ok=True)
 
     # Listar en remoto y traer SOLO *.bin y *.hex
-    ls_cmd = f"ssh {REMOTE} ls -1 {shlex.quote(build_remote)}"
+    ls_cmd = f"ssh {SSH_BASE_OPTS} {REMOTE} ls -1 {shlex.quote(build_remote)}"
     code_ls, out_ls, err_ls = run_capture(ls_cmd)
     if code_ls != 0:
         print(out_ls + err_ls)
@@ -720,10 +762,11 @@ def main():
         print(f"ℹ Salida de compilación guardada en {COMPILE_LOG}")
 
         print("🔍 Detectando carpeta de build en el servidor…")
-        out = subprocess.check_output(
-            f"ssh {REMOTE} ls {shlex.quote(remote_proj)}/build",
-            shell=True, text=True
-        ).split()
+        code, out, err = run_capture(f"ssh {SSH_BASE_OPTS} {REMOTE} ls {shlex.quote(remote_proj)}/build")
+        if code != 0:
+            print(out + err)
+            sys.exit("❌ No se pudo listar build/ en el servidor.")
+        out = out.split()
         if not out:
             sys.exit("❌ No se encontró ningún subdirectorio en build/")
         carpeta_build = out[0].strip()
