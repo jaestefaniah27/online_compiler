@@ -41,7 +41,7 @@ BOARD_ALIASES = {
     "esp32c3":   "esp32:esp32:esp32c3",
     "s3":        "esp32:esp32:esp32s3",
     "esp32s3":   "esp32:esp32:esp32s3",
-    # NUEVO: Arduino Micro (ATmega32U4)
+    # Arduino Micro (ATmega32U4)
     "micro":     "arduino:avr:micro",
 }
 
@@ -81,6 +81,8 @@ def _print_elapsed():
     print(f"⏱ Tiempo transcurrido: {elapsed:.1f} s")
 
 
+# ------------------------------ Utilidades -------------------------------- #
+
 def run(cmd, **kw):
     # Permite cmd como str (usa shell) o como list (sin shell, más seguro en Windows)
     if isinstance(cmd, (list, tuple)):
@@ -89,7 +91,6 @@ def run(cmd, **kw):
     else:
         print(f"» {cmd}")
         subprocess.run(cmd, shell=True, check=True, **kw)
-
 
 
 def run_capture(cmd):
@@ -109,16 +110,33 @@ def puerto_esp32():
     sys.exit("❌ ESP32 no encontrada")
 
 
-# === NUEVO: versión opcional que NO aborta si no hay puerto ===
 def puerto_esp32_optional():
     print("🔍 Buscando puerto (opcional) …")
     for p in serial.tools.list_ports.comports():
-        if any(t in p.description for t in ("CP210", "Silicon", "USB", "ESP32", "CH340", "CDC", "Arduino", "CDC")):
+        if any(t in p.description for t in ("CP210", "Silicon", "USB", "ESP32", "CH340", "CDC", "Arduino")):
             print(f"✔ Detectado {p.device}")
             return p.device
     print("⚠ No se detectó puerto. Se continuará sin flashear.")
     return None
-# ==============================================================
+
+
+def detectar_puerto_serial_optional():
+    """
+    Detector GENÉRICO (opcional) de puerto serie válido tanto para ESP32 como Arduino AVR.
+    No aborta si no encuentra nada: devuelve None.
+    """
+    print("🔍 Buscando puerto (opcional) …")
+    patrones = (
+        "CP210", "Silicon", "USB", "ESP32", "CH340", "CDC",
+        "Arduino", "Caterina", "ATmega32U4", "ATm32U4",
+    )
+    for p in serial.tools.list_ports.comports():
+        desc = f"{p.description or ''} {p.hwid or ''}"
+        if any(t.lower() in desc.lower() for t in patrones):
+            print(f"✔ Detectado {p.device}")
+            return p.device
+    print("⚠ No se detectó puerto compatible.")
+    return None
 
 
 def leer_libraries():
@@ -359,6 +377,7 @@ def releases_dir() -> Path:
     d.mkdir(exist_ok=True)
     return d
 
+
 def write_meta(dirpath: Path, fqbn: str, family: str):
     meta = dirpath / ".meta"
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -369,6 +388,7 @@ def write_meta(dirpath: Path, fqbn: str, family: str):
         f"FAMILY={family}",
     ]
     meta.write_text("\n".join(lines) + "\n", encoding="utf8")
+
 
 def read_meta(dirpath: Path) -> dict:
     meta = dirpath / ".meta"
@@ -381,9 +401,32 @@ def read_meta(dirpath: Path) -> dict:
     d = {}
     for line in meta.read_text(encoding="utf8").splitlines():
         if "=" in line:
-            k,v = line.split("=",1)
+            k, v = line.split("=", 1)
             d[k.strip()] = v.strip()
     return d
+
+
+def extraer_fqbn_de_compile_log() -> Optional[str]:
+    """
+    Intenta extraer el FQBN real del último compile (arduino-cli) leyendo compile.log.
+    Busca patrones comunes como '--fqbn <...>' o 'FQBN:'.
+    """
+    if not COMPILE_LOG.exists():
+        return None
+    txt = COMPILE_LOG.read_text(encoding="utf8", errors="ignore")
+    # Patrones habituales
+    # 1) ... --fqbn vendor:arch:board ...
+    for token in ("--fqbn", "FQBN:", "fqbn="):
+        idx = txt.find(token)
+        if idx != -1:
+            frag = txt[idx: idx+200]  # ventana corta
+            # intenta capturar vendor:arch:board
+            import re
+            m = re.search(r"([a-zA-Z0-9_]+:[a-zA-Z0-9_]+:[a-zA-Z0-9_]+)", frag)
+            if m:
+                return m.group(1)
+    return None
+
 
 def save_release(name: str, fqbn: str, family: str):
     src = Path("binarios")
@@ -419,6 +462,7 @@ def save_release(name: str, fqbn: str, family: str):
     write_meta(dst, fqbn, family)
     print(f"✅ Guardado en releases/{name}")
 
+
 def load_release_bins(name: str) -> Tuple[Dict[str, Path], str]:
     rdir = releases_dir() / name
     if not rdir.exists():
@@ -440,81 +484,12 @@ def load_release_bins(name: str) -> Tuple[Dict[str, Path], str]:
             files["boot_app0"] = archivo
         elif low.endswith(".ino.bin"):
             files["application"] = archivo
-        elif low.endswith(".bin") and all(t not in low for t in ("partition","bootloader","app0")):
+        elif low.endswith(".bin") and all(t not in low for t in ("partition", "bootloader", "app0")):
             # fallback .bin de aplicación
             files["application"] = archivo
 
     return files, family
 
-def flash_release(name: str, port: Optional[str], baud: int):
-    files, family = load_release_bins(name)
-    if family == "avr":
-        cli = resolve_arduino_cli()
-        # Para AVR usamos arduino-cli upload con --input-dir
-        fqbn = "arduino:avr:micro"  # por defecto razonable; idealmente leer de .meta
-        if (releases_dir()/name/".meta").exists():
-            meta = read_meta(releases_dir()/name)
-            if meta.get("FQBN"):
-                fqbn = meta["FQBN"]
-        com = port or puerto_esp32()
-        cmd = [
-            cli, "upload",
-            "--fqbn", fqbn,
-            "-p", com,
-            "--input-dir", str((releases_dir()/name).resolve()),
-            str(Path.cwd().resolve()),
-        ]
-        run(cmd)
-        print(f"✅ Flash AVR de release '{name}' completado en {com}")
-        return
-
-    # ESP32
-    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
-    com = port or puerto_esp32()
-    cmd = construir_flash_cmd(esptool, com, baud, files, family)
-    run(cmd)
-    print(f"✅ Flash de release '{name}' completado en {com}")
-
-def resolve_arduino_cli() -> str:
-    """
-    Intenta localizar arduino-cli de forma portátil.
-    Prioriza:
-      - Variable de entorno ARDUINO_CLI (ruta completa al ejecutable)
-      - which/where
-      - ubicaciones típicas en Windows
-    """
-    # 1) Env var explícita
-    env_cli = os.environ.get("ARDUINO_CLI")
-    if env_cli and Path(env_cli).exists():
-        return str(Path(env_cli))
-
-    # 2) which / where
-    cand = shutil.which("arduino-cli") or shutil.which("arduino-cli.exe")
-    if cand:
-        return cand
-
-    # 3) Ubicaciones comunes en Windows
-    if platform.system().lower().startswith("win"):
-        home = Path.home()
-        candidates = [
-            home / "AppData/Local/Programs/arduino-cli/arduino-cli.exe",
-            home / "AppData/Local/Arduino CLI/arduino-cli.exe",
-            Path("C:/Program Files/arduino-cli/arduino-cli.exe"),
-            Path("C:/Program Files (x86)/arduino-cli/arduino-cli.exe"),
-        ]
-        for c in candidates:
-            if c.exists():
-                return str(c)
-
-    # Si no se encuentra, dar un mensaje explicativo
-    raise FileNotFoundError(
-        "No se encontró 'arduino-cli'. Instálalo y/o define la variable "
-        "de entorno ARDUINO_CLI con la ruta completa al ejecutable. "
-        "Descarga: https://arduino.github.io/arduino-cli/latest/installation/"
-    )
-
-import platform
-import shutil  # ya lo usas arriba
 
 def resolve_arduino_cli() -> str:
     """
@@ -546,24 +521,71 @@ def resolve_arduino_cli() -> str:
     )
 
 
+def flash_release(name: str, port: Optional[str], baud: int):
+    files, family = load_release_bins(name)
+    if family == "avr":
+        cli = resolve_arduino_cli()
+        # Para AVR usamos arduino-cli upload con --input-dir
+        fqbn = "arduino:avr:micro"  # por defecto razonable; si .meta tiene FQBN lo usamos
+        meta_path = releases_dir() / name / ".meta"
+        if meta_path.exists():
+            meta = read_meta(releases_dir() / name)
+            if meta.get("FQBN"):
+                fqbn = meta["FQBN"]
+
+        com = port or detectar_puerto_serial_optional()
+        if not com:
+            sys.exit("❌ No se detectó ningún puerto serie para Arduino. Conecta la placa y reintenta.")
+
+        cmd = [
+            cli, "upload",
+            "--fqbn", fqbn,
+            "-p", com,
+            "--input-dir", str((releases_dir() / name).resolve()),
+            str(Path.cwd().resolve()),
+        ]
+        run(cmd)
+        print(f"✅ Flash AVR de release '{name}' completado en {com}")
+        return
+
+    # ESP32
+    esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
+    com = port or detectar_puerto_serial_optional()
+    if not com:
+        sys.exit("❌ No se detectó ningún puerto serie para ESP32. Conecta la placa y reintenta.")
+    cmd = construir_flash_cmd(esptool, com, baud, files, family)
+    run(cmd)
+    print(f"✅ Flash de release '{name}' completado en {com}")
+
+
+# --------------------------------- Main ----------------------------------- #
+
 def main():
     start = time.time()
     args = [a.lower() for a in sys.argv[1:]]
 
-    # --- NUEVO: guardar y flashear releases ---
+    # --- Guardar release ---
     if args and args[0].lower() == "save":
         if len(args) < 2:
             sys.exit("Uso: arcompile save <nombre_release>")
-        fqbn_base = resolver_fqbn_desde_args(args[2:])
-        family = familia_chip_de_fqbn(fqbn_base)
-        try:
-            with open(COMPILE_LOG, "r", encoding="utf8") as f:
-                _ = f.read()
-        except Exception:
-            pass
-        save_release(args[1], fqbn_base, family)
+
+        # 1) Intenta extraer FQBN real del compile.log
+        fqbn_detectado = extraer_fqbn_de_compile_log()
+
+        # 2) Si no hay, deduce familia por artefactos en ./binarios
+        if not fqbn_detectado:
+            bin_dir = Path("binarios")
+            if any(p.suffix.lower() == ".hex" for p in bin_dir.glob("*.*")):
+                # AVR por presencia de .hex ⇒ usa Micro como default razonable
+                fqbn_detectado = "arduino:avr:micro"
+            else:
+                fqbn_detectado = FQBN_DEFAULT
+
+        family = familia_chip_de_fqbn(fqbn_detectado)
+        save_release(args[1], fqbn_detectado, family)
         return
 
+    # --- Flashear release ---
     if args and args[0].lower() == "flash":
         if len(args) < 2:
             sys.exit("Uso: arcompile flash <nombre_release> [COMx]")
@@ -656,7 +678,7 @@ def main():
                     sys.exit(f"❌ Falta el binario requerido: {f}")
 
     # === Flasheo (sólo si hay puerto disponible ahora) ===
-    com_final = puerto_esp32_optional()
+    com_final = detectar_puerto_serial_optional()
     if not com_final:
         print("🚫 No se detectó puerto. La compilación/descarga de artefactos se han completado correctamente.")
         print("📦 Artefactos listos en ./binarios/")
@@ -686,7 +708,6 @@ def main():
         run(flash_cmd)
 
     print(f"✅ Terminado en {time.time() - start:.1f} s")
-
 
 
 if __name__ == "__main__":
