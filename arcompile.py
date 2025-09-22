@@ -137,9 +137,50 @@ def instalar_librerias(libs):
 
 
 def subir_proyecto(remote_proj):
-    run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
-    run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
-    run(f"scp -r * {REMOTE}:{remote_proj}/")
+    run(f"ssh {REMOTE} rm -rf {remote_proj}")
+    run(f"ssh {REMOTE} mkdir -p {remote_proj}")
+
+    exts = ("*.ino", "*.h", "*.cpp")
+    ignore_dirs = {".git", ".vscode", "__pycache__", "binarios", "releases"}
+
+    def is_ignored(path: Path) -> bool:
+        parts = {part.lower() for part in path.parts}
+        return any(d in parts for d in ignore_dirs)
+
+    # Recorre recursivamente y recoge SOLO fuentes
+    files = []
+    for pattern in exts:
+        for f in Path(".").rglob(pattern):
+            if f.is_file() and not is_ignored(f):
+                files.append(f)
+
+    # Añadir libraries.txt si existe en raíz
+    lib_file = Path("libraries.txt")
+    if lib_file.exists():
+        files.append(lib_file)
+
+    if not files:
+        sys.exit("❌ No hay archivos .ino, .h, .cpp ni libraries.txt para subir.")
+
+    # Detecta nombres duplicados al aplanar
+    by_name = {}
+    duplicates = []
+    for f in files:
+        name = f.name
+        if name in by_name and by_name[name].resolve() != f.resolve():
+            duplicates.append((name, by_name[name], f))
+        else:
+            by_name[name] = f
+
+    if duplicates:
+        print("❌ Colisión de nombres al aplanar (mismo nombre en distintas carpetas):")
+        for name, a, b in duplicates:
+            print(f"   - {name}: {a}  <->  {b}")
+        sys.exit("Renombra los archivos duplicados o unifícalos antes de subir.")
+
+    # Subida aplanada: remote_proj/<basename>
+    for name, src in by_name.items():
+        run(f"scp {str(src)} {REMOTE}:{remote_proj}/{name}")
 
 
 def mostrar_ayuda():
