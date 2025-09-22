@@ -73,13 +73,14 @@ FLASH_LAYOUT = {
 }
 
 SSH_BASE_OPTS = (
+    "-n -T "
     "-o BatchMode=yes "
     "-o StrictHostKeyChecking=no "
     "-o UserKnownHostsFile=/dev/null "
     "-o ConnectTimeout=6 "
     "-o ServerAliveInterval=5 "
     "-o ServerAliveCountMax=1 "
-    "-o ConnectionAttempts=1"
+    "-o ConnectionAttempts=1 "
     "-o LogLevel=QUIET"
 )
 
