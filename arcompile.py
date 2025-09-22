@@ -292,25 +292,63 @@ def descargar_binarios(build_remote, sketch_name) -> Dict[str, Path]:
     out_dir = Path("binarios")
     out_dir.mkdir(exist_ok=True)
 
-    # Descargar tanto .bin (ESP32) como .hex (AVR)
-    scp_cmd = f"scp {REMOTE}:{shlex.quote(build_remote)}/*.* binarios/"
-    run(scp_cmd)
+    # Listar en remoto y traer SOLO *.bin y *.hex
+    ls_cmd = f"ssh {REMOTE} ls -1 {shlex.quote(build_remote)}"
+    code_ls, out_ls, err_ls = run_capture(ls_cmd)
+    if code_ls != 0:
+        print(out_ls + err_ls)
+        sys.exit("❌ No se pudo listar la carpeta de build remota.")
+
+    remote_files = [line.strip() for line in out_ls.splitlines() if line.strip()]
+    wanted = [f for f in remote_files if f.lower().endswith((".bin", ".hex"))]
+    if not wanted:
+        sys.exit("❌ No hay artefactos .bin/.hex en el build remoto.")
+
+    for fn in wanted:
+        src = f"{REMOTE}:{shlex.quote(build_remote)}/{shlex.quote(fn)}"
+        run(f"scp {src} binarios/")
 
     local_files: Dict[str, Path] = {}
+
+    def is_exact_bootloader(name: str) -> bool:
+        # Acepta exactamente *.bootloader.bin, NO *.with_bootloader.bin
+        return name.endswith(".bootloader.bin") and "with_bootloader" not in name
+
+    def is_exact_partitions(name: str) -> bool:
+        return name.endswith(".partitions.bin")
+
+    def is_boot_app0(name: str) -> bool:
+        return name.endswith("app0.bin") and "with_bootloader" not in name and "merged" not in name
+
+    def is_application_bin(name: str) -> bool:
+        # Acepta *.ino.bin o <sketch>.bin, nunca with_bootloader/merged
+        if "with_bootloader" in name or "merged" in name:
+            return False
+        if name.endswith(".ino.bin"):
+            return True
+        base = sketch_name.lower().removesuffix(".ino")
+        return name == f"{base}.bin"
+
+    # Mapear roles con reglas estrictas
     for archivo in out_dir.glob("*.*"):
         name = archivo.name.lower()
         if name.endswith(".hex"):
             local_files["application_hex"] = archivo
         elif is_exact_bootloader(name):
             local_files["bootloader"] = archivo
-        elif "partition" in name and name.endswith(".bin"):
+        elif is_exact_partitions(name):
             local_files["partitions"] = archivo
-        elif "app0" in name and name.endswith(".bin"):
+        elif is_boot_app0(name):
             local_files["boot_app0"] = archivo
-        elif name.endswith(".ino.bin") or name == f"{sketch_name}.bin".lower():
+        elif name.endswith(".bin") and is_application_bin(name):
             local_files["application"] = archivo
 
-    print("✅ Artefactos descargados en ./binarios/")
+    # Aviso si ignoramos imágenes combinadas
+    bad = [p.name for p in out_dir.glob("*.bin") if ("with_bootloader" in p.name.lower() or "merged" in p.name.lower())]
+    if bad:
+        print("ℹ Ignorando imágenes combinadas:", ", ".join(bad))
+
+    print("✅ Artefactos descargados en ./binarios/ (solo .bin y .hex)")
     return local_files
 
 
