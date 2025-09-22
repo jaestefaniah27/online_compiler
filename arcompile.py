@@ -599,6 +599,7 @@ def main():
     else:
         print("⚡ Usando artefactos ya compilados")
         out_dir = Path("binarios")
+        com_final = puerto_esp32_optional()
         if used_family == "avr":
             cli = resolve_arduino_cli()
             cmd = [
