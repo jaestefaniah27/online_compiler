@@ -358,7 +358,7 @@ def descargar_binarios(build_remote, sketch_name) -> Dict[str, Path]:
     out_dir.mkdir(exist_ok=True)
 
     # Listar en remoto y traer SOLO *.bin y *.hex
-    ls_cmd = f"ssh {SSH_BASE_OPTS} {REMOTE} ls -1 {shlex.quote(build_remote)}"
+    ls_cmd = f"ssh {REMOTE} ls -1 {shlex.quote(build_remote)}"
     code_ls, out_ls, err_ls = run_capture(ls_cmd)
     if code_ls != 0:
         print(out_ls + err_ls)
