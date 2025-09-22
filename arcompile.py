@@ -201,9 +201,11 @@ def subir_proyecto(remote_proj):
     Sube SOLO .ino, .h, .cpp (desde subcarpetas) y libraries.txt (si existe),
     a la carpeta remota raíz, TODO en un ÚNICO comando `scp`, con timeouts y reintentos.
     """
-    # Prepara carpeta remota (con timeout+retries)
-    ssh_exec(f"rm -rf {shlex.quote(remote_proj)}", attempts=2, timeout=10)
-    ssh_exec(f"mkdir -p {shlex.quote(remote_proj)}", attempts=2, timeout=10)
+    # Warm-up para evitar primer bloqueo perezoso de SSH
+    ssh_exec("true", attempts=1, timeout=6)
+
+    # Combinar limpieza + creación en una sola conexión SSH
+    ssh_exec(f'"rm -rf {shlex.quote(remote_proj)} && mkdir -p {shlex.quote(remote_proj)}"', attempts=3, timeout=12)
 
     exts = ("*.ino", "*.h", "*.cpp")
     ignore_dirs = {".git", ".vscode", "__pycache__", "binarios", "releases"}
@@ -369,9 +371,14 @@ def descargar_binarios(build_remote, sketch_name) -> Dict[str, Path]:
     if not wanted:
         sys.exit("❌ No hay artefactos .bin/.hex en el build remoto.")
 
-    for fn in wanted:
-        src = f"{REMOTE}:{shlex.quote(build_remote)}/{shlex.quote(fn)}"
-        run(f"scp {src} binarios/")
+    # Construye una sola llamada scp con todas las rutas remotas y el destino local
+    remote_srcs = " ".join(
+        f'{REMOTE}:"{build_remote}/{fn}"' for fn in wanted
+    )
+    single_scp_cmd = f"scp {SCP_BASE_OPTS} {remote_srcs} binarios/"
+
+    # Timeout y reintentos para una descarga robusta
+    run_retry(single_scp_cmd, attempts=3, timeout=120)
 
     local_files: Dict[str, Path] = {}
 
