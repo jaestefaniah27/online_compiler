@@ -139,13 +139,15 @@ def instalar_librerias(libs):
 def subir_proyecto(remote_proj):
     """
     Sube SOLO .ino, .h, .cpp (desde subcarpetas) y libraries.txt (si existe),
-    aplanando todo en el servidor. Se empaqueta en un .tar.gz local y se sube en 1 scp.
+    a la carpeta remota raíz, TODO en un ÚNICO comando `scp`.
+    - Aplana: en el servidor quedan en remote_proj/<basename>
+    - Detecta colisiones de nombre y aborta si las hay
     """
-    import tarfile
-    import tempfile
+    import os
 
-    run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
-    run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
+    # Prepara carpeta remota
+    run(f"ssh {REMOTE} rm -rf {remote_proj}")
+    run(f"ssh {REMOTE} mkdir -p {remote_proj}")
 
     exts = ("*.ino", "*.h", "*.cpp")
     ignore_dirs = {".git", ".vscode", "__pycache__", "binarios", "releases"}
@@ -154,13 +156,14 @@ def subir_proyecto(remote_proj):
         parts = {part.lower() for part in path.parts}
         return any(d in parts for d in ignore_dirs)
 
-    # Reunir archivos candidatos
+    # Reunir candidatos recursivamente
     files = []
     for pattern in exts:
         for f in Path(".").rglob(pattern):
             if f.is_file() and not is_ignored(f):
                 files.append(f)
 
+    # Añadir libraries.txt (si existe en raíz)
     lib_file = Path("libraries.txt")
     if lib_file.exists():
         files.append(lib_file)
@@ -168,7 +171,7 @@ def subir_proyecto(remote_proj):
     if not files:
         sys.exit("❌ No hay archivos .ino, .h, .cpp ni libraries.txt para subir.")
 
-    # Detectar colisiones al aplanar (mismo basename en distintas carpetas)
+    # Detectar colisiones al aplanar (mismo basename en rutas distintas)
     by_name = {}
     duplicates = []
     for f in files:
@@ -184,25 +187,23 @@ def subir_proyecto(remote_proj):
             print(f"   - {name}: {a}  <->  {b}")
         sys.exit("Renombra los archivos duplicados antes de subir.")
 
-    # Crear tar en el directorio actual (sin "C:\")
-    local_tar = Path.cwd() / "upload_sources.tar.gz"
-    try:
-        if local_tar.exists():
-            local_tar.unlink()
-        with tarfile.open(local_tar, "w:gz") as tar:
-            for name, src in by_name.items():
-                tar.add(str(src), arcname=name)
+    # --- Construir un ÚNICO scp con todos los paths locales ---
+    # Nota importante (Windows):
+    # - NO usamos shlex.quote para rutas locales (mete comillas simples que rompen en cmd.exe).
+    # - En su lugar, usamos comillas dobles para cada ruta local.
+    def q_local(p: Path) -> str:
+        s = str(p)
+        # Escapar comillas dobles si existieran (raro, pero por seguridad)
+        s = s.replace('"', r'\"')
+        return f'"{s}"'
 
-        # Subir en 1 viaje y extraer (ruta remota sin espacios)
-        run(f"scp {local_tar.name} {REMOTE}:{shlex.quote(remote_proj)}/upload_sources.tar.gz")
-        run(f"ssh {REMOTE} 'cd {shlex.quote(remote_proj)} && tar -xzf upload_sources.tar.gz && rm -f upload_sources.tar.gz'")
-    finally:
-        # Limpieza local
-        try:
-            if local_tar.exists():
-                local_tar.unlink()
-        except Exception:
-            pass
+    local_args = " ".join(q_local(p) for p in by_name.values())
+    # Destino remoto: una carpeta. No hace falta repetir nombre de archivo (scp usará el basename).
+    # Evitamos espacios → si tu ruta remota puede tenerlos, usa comillas dobles tras los dos puntos.
+    remote_dest = f'{REMOTE}:"{remote_proj}/"'
+
+    # Un solo viaje:
+    run(f"scp {local_args} {remote_dest}")
 
 
 def mostrar_ayuda():
