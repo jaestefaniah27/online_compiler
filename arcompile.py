@@ -73,7 +73,7 @@ FLASH_LAYOUT = {
 }
 
 SSH_BASE_OPTS = (
-    "-n -T "
+    "-n -T "  # ssh: NO stdin y sin pty
     "-o BatchMode=yes "
     "-o StrictHostKeyChecking=no "
     "-o UserKnownHostsFile=/dev/null "
@@ -84,7 +84,18 @@ SSH_BASE_OPTS = (
     "-o LogLevel=QUIET"
 )
 
-SCP_BASE_OPTS = SSH_BASE_OPTS  # mismas opciones aplican a scp
+SCP_BASE_OPTS = (
+    "-T "  # scp: NO usar -n (no existe)
+    "-o BatchMode=yes "
+    "-o StrictHostKeyChecking=no "
+    "-o UserKnownHostsFile=/dev/null "
+    "-o ConnectTimeout=6 "
+    "-o ServerAliveInterval=5 "
+    "-o ServerAliveCountMax=1 "
+    "-o ConnectionAttempts=1 "
+    "-o LogLevel=QUIET"
+)
+
 
 # Tiempo de inicio para cálculo de elapsed
 _start_time = time.time()
