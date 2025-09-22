@@ -6,6 +6,7 @@ import subprocess
 import shlex
 import time
 import atexit
+import platform
 import shutil
 import hashlib
 from pathlib import Path
@@ -81,13 +82,14 @@ def _print_elapsed():
 
 
 def run(cmd, **kw):
-    print(f"» {cmd}")
-    try:
+    # Permite cmd como str (usa shell) o como list (sin shell, más seguro en Windows)
+    if isinstance(cmd, (list, tuple)):
+        print("»", " ".join(shlex.quote(str(x)) for x in cmd))
+        subprocess.run(cmd, shell=False, check=True, **kw)
+    else:
+        print(f"» {cmd}")
         subprocess.run(cmd, shell=True, check=True, **kw)
-    except subprocess.CalledProcessError as e:
-        if e.stderr:
-            ERROR_LOG.write_text(e.stderr, encoding='utf8')
-        raise
+
 
 
 def run_capture(cmd):
@@ -447,6 +449,7 @@ def load_release_bins(name: str) -> Tuple[Dict[str, Path], str]:
 def flash_release(name: str, port: Optional[str], baud: int):
     files, family = load_release_bins(name)
     if family == "avr":
+        cli = resolve_arduino_cli()
         # Para AVR usamos arduino-cli upload con --input-dir
         fqbn = "arduino:avr:micro"  # por defecto razonable; idealmente leer de .meta
         if (releases_dir()/name/".meta").exists():
@@ -454,12 +457,13 @@ def flash_release(name: str, port: Optional[str], baud: int):
             if meta.get("FQBN"):
                 fqbn = meta["FQBN"]
         com = port or puerto_esp32()
-        cmd = (
-            f"arduino-cli upload --fqbn {shlex.quote(fqbn)} "
-            f"-p {shlex.quote(com)} "
-            f"--input-dir {shlex.quote(str((releases_dir()/name).resolve()))} "
-            f"{shlex.quote(str(Path.cwd().resolve()))}"
-        )
+        cmd = [
+            cli, "upload",
+            "--fqbn", fqbn,
+            "-p", com,
+            "--input-dir", str((releases_dir()/name).resolve()),
+            str(Path.cwd().resolve()),
+        ]
         run(cmd)
         print(f"✅ Flash AVR de release '{name}' completado en {com}")
         return
@@ -470,6 +474,44 @@ def flash_release(name: str, port: Optional[str], baud: int):
     cmd = construir_flash_cmd(esptool, com, baud, files, family)
     run(cmd)
     print(f"✅ Flash de release '{name}' completado en {com}")
+
+def resolve_arduino_cli() -> str:
+    """
+    Intenta localizar arduino-cli de forma portátil.
+    Prioriza:
+      - Variable de entorno ARDUINO_CLI (ruta completa al ejecutable)
+      - which/where
+      - ubicaciones típicas en Windows
+    """
+    # 1) Env var explícita
+    env_cli = os.environ.get("ARDUINO_CLI")
+    if env_cli and Path(env_cli).exists():
+        return str(Path(env_cli))
+
+    # 2) which / where
+    cand = shutil.which("arduino-cli") or shutil.which("arduino-cli.exe")
+    if cand:
+        return cand
+
+    # 3) Ubicaciones comunes en Windows
+    if platform.system().lower().startswith("win"):
+        home = Path.home()
+        candidates = [
+            home / "AppData/Local/Programs/arduino-cli/arduino-cli.exe",
+            home / "AppData/Local/Arduino CLI/arduino-cli.exe",
+            Path("C:/Program Files/arduino-cli/arduino-cli.exe"),
+            Path("C:/Program Files (x86)/arduino-cli/arduino-cli.exe"),
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+
+    # Si no se encuentra, dar un mensaje explicativo
+    raise FileNotFoundError(
+        "No se encontró 'arduino-cli'. Instálalo y/o define la variable "
+        "de entorno ARDUINO_CLI con la ruta completa al ejecutable. "
+        "Descarga: https://arduino.github.io/arduino-cli/latest/installation/"
+    )
 
 
 def main():
@@ -558,15 +600,15 @@ def main():
         print("⚡ Usando artefactos ya compilados")
         out_dir = Path("binarios")
         if used_family == "avr":
-            # AVR: .hex
-            cand_hex = [out_dir / f"{sketch_name}.hex",
-                        out_dir / f"{sketch_name}.ino.hex",
-                        out_dir / f"{Path.cwd().name}.ino.hex",
-                        out_dir / f"{Path.cwd().name}.hex"]
-            app_hex = next((p for p in cand_hex if p.exists()), None)
-            if not app_hex:
-                sys.exit("❌ Falta el .hex necesario en ./binarios para AVR.")
-            bin_files = {"application_hex": app_hex}
+            cli = resolve_arduino_cli()
+            cmd = [
+                cli, "upload",
+                "--fqbn", used_fqbn,
+                "-p", com_final,
+                "--input-dir", str(Path("binarios").resolve()),
+                str(Path.cwd().resolve()),
+            ]
+            run(cmd)
         else:
             # ESP32: .bin
             bin_files = {
