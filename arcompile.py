@@ -184,15 +184,25 @@ def subir_proyecto(remote_proj):
             print(f"   - {name}: {a}  <->  {b}")
         sys.exit("Renombra los archivos duplicados antes de subir.")
 
-    # Empaquetar en tar.gz con arcname=basename (aplanado)
-    with tempfile.TemporaryDirectory() as tmpd:
-        tar_path = Path(tmpd) / "upload_sources.tar.gz"
-        with tarfile.open(tar_path, "w:gz") as tar:
+    # Crear tar en el directorio actual (sin "C:\")
+    local_tar = Path.cwd() / "upload_sources.tar.gz"
+    try:
+        if local_tar.exists():
+            local_tar.unlink()
+        with tarfile.open(local_tar, "w:gz") as tar:
             for name, src in by_name.items():
                 tar.add(str(src), arcname=name)
-        # Subir 1 archivo y extraer en el servidor
-        run(f"scp {shlex.quote(str(tar_path))} {REMOTE}:{shlex.quote(remote_proj)}/upload_sources.tar.gz")
+
+        # Subir en 1 viaje y extraer (ruta remota sin espacios)
+        run(f"scp {local_tar.name} {REMOTE}:{shlex.quote(remote_proj)}/upload_sources.tar.gz")
         run(f"ssh {REMOTE} 'cd {shlex.quote(remote_proj)} && tar -xzf upload_sources.tar.gz && rm -f upload_sources.tar.gz'")
+    finally:
+        # Limpieza local
+        try:
+            if local_tar.exists():
+                local_tar.unlink()
+        except Exception:
+            pass
 
 
 def mostrar_ayuda():
