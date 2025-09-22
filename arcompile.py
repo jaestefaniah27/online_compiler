@@ -513,6 +513,38 @@ def resolve_arduino_cli() -> str:
         "Descarga: https://arduino.github.io/arduino-cli/latest/installation/"
     )
 
+import platform
+import shutil  # ya lo usas arriba
+
+def resolve_arduino_cli() -> str:
+    """
+    Localiza arduino-cli de forma portátil.
+    Prioriza ARDUINO_CLI, luego which/where y ubicaciones típicas de Windows.
+    """
+    env_cli = os.environ.get("ARDUINO_CLI")
+    if env_cli and Path(env_cli).exists():
+        return str(Path(env_cli))
+
+    cand = shutil.which("arduino-cli") or shutil.which("arduino-cli.exe")
+    if cand:
+        return cand
+
+    if platform.system().lower().startswith("win"):
+        home = Path.home()
+        candidates = [
+            home / "AppData/Local/Programs/arduino-cli/arduino-cli.exe",
+            home / "AppData/Local/Arduino CLI/arduino-cli.exe",
+            Path("C:/Program Files/Arduino CLI/arduino-cli.exe"),
+            Path("C:/Program Files (x86)/Arduino CLI/arduino-cli.exe"),
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+
+    raise FileNotFoundError(
+        "No se encontró 'arduino-cli'. Instálalo o define ARDUINO_CLI con la ruta completa al ejecutable."
+    )
+
 
 def main():
     start = time.time()
@@ -599,17 +631,18 @@ def main():
     else:
         print("⚡ Usando artefactos ya compilados")
         out_dir = Path("binarios")
-        com_final = puerto_esp32_optional()
         if used_family == "avr":
-            cli = resolve_arduino_cli()
-            cmd = [
-                cli, "upload",
-                "--fqbn", used_fqbn,
-                "-p", com_final,
-                "--input-dir", str(Path("binarios").resolve()),
-                str(Path.cwd().resolve()),
+            # AVR: verificar que exista un .hex; el upload se hará más abajo
+            cand_hex = [
+                out_dir / f"{sketch_name}.hex",
+                out_dir / f"{sketch_name}.ino.hex",
+                out_dir / f"{Path.cwd().name}.ino.hex",
+                out_dir / f"{Path.cwd().name}.hex",
             ]
-            run(cmd)
+            app_hex = next((p for p in cand_hex if p.exists()), None)
+            if not app_hex:
+                sys.exit("❌ Falta el .hex necesario en ./binarios para AVR.")
+            # No hace falta guardar en bin_files para AVR; se usa --input-dir más abajo
         else:
             # ESP32: .bin
             bin_files = {
@@ -632,12 +665,14 @@ def main():
 
     if used_family == "avr":
         # Subida con arduino-cli usando artefactos .hex en ./binarios
-        cmd = (
-            f"arduino-cli upload --fqbn {shlex.quote(used_fqbn)} "
-            f"-p {shlex.quote(com_final)} "
-            f"--input-dir {shlex.quote(str(Path('binarios').resolve()))} "
-            f"{shlex.quote(str(Path.cwd().resolve()))}"
-        )
+        cli = resolve_arduino_cli()
+        cmd = [
+            cli, "upload",
+            "--fqbn", used_fqbn,
+            "-p", com_final,
+            "--input-dir", str(Path("binarios").resolve()),
+            str(Path.cwd().resolve()),
+        ]
         run(cmd)
     else:
         esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
@@ -651,6 +686,7 @@ def main():
         run(flash_cmd)
 
     print(f"✅ Terminado en {time.time() - start:.1f} s")
+
 
 
 if __name__ == "__main__":
