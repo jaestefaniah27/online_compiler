@@ -137,8 +137,15 @@ def instalar_librerias(libs):
 
 
 def subir_proyecto(remote_proj):
-    run(f"ssh {REMOTE} rm -rf {remote_proj}")
-    run(f"ssh {REMOTE} mkdir -p {remote_proj}")
+    """
+    Sube SOLO .ino, .h, .cpp (desde subcarpetas) y libraries.txt (si existe),
+    aplanando todo en el servidor. Se empaqueta en un .tar.gz local y se sube en 1 scp.
+    """
+    import tarfile
+    import tempfile
+
+    run(f"ssh {REMOTE} rm -rf {shlex.quote(remote_proj)}")
+    run(f"ssh {REMOTE} mkdir -p {shlex.quote(remote_proj)}")
 
     exts = ("*.ino", "*.h", "*.cpp")
     ignore_dirs = {".git", ".vscode", "__pycache__", "binarios", "releases"}
@@ -147,14 +154,13 @@ def subir_proyecto(remote_proj):
         parts = {part.lower() for part in path.parts}
         return any(d in parts for d in ignore_dirs)
 
-    # Recorre recursivamente y recoge SOLO fuentes
+    # Reunir archivos candidatos
     files = []
     for pattern in exts:
         for f in Path(".").rglob(pattern):
             if f.is_file() and not is_ignored(f):
                 files.append(f)
 
-    # Añadir libraries.txt si existe en raíz
     lib_file = Path("libraries.txt")
     if lib_file.exists():
         files.append(lib_file)
@@ -162,7 +168,7 @@ def subir_proyecto(remote_proj):
     if not files:
         sys.exit("❌ No hay archivos .ino, .h, .cpp ni libraries.txt para subir.")
 
-    # Detecta nombres duplicados al aplanar
+    # Detectar colisiones al aplanar (mismo basename en distintas carpetas)
     by_name = {}
     duplicates = []
     for f in files:
@@ -173,14 +179,20 @@ def subir_proyecto(remote_proj):
             by_name[name] = f
 
     if duplicates:
-        print("❌ Colisión de nombres al aplanar (mismo nombre en distintas carpetas):")
+        print("❌ Colisión de nombres al aplanar:")
         for name, a, b in duplicates:
             print(f"   - {name}: {a}  <->  {b}")
-        sys.exit("Renombra los archivos duplicados o unifícalos antes de subir.")
+        sys.exit("Renombra los archivos duplicados antes de subir.")
 
-    # Subida aplanada: remote_proj/<basename>
-    for name, src in by_name.items():
-        run(f"scp {str(src)} {REMOTE}:{remote_proj}/{name}")
+    # Empaquetar en tar.gz con arcname=basename (aplanado)
+    with tempfile.TemporaryDirectory() as tmpd:
+        tar_path = Path(tmpd) / "upload_sources.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tar:
+            for name, src in by_name.items():
+                tar.add(str(src), arcname=name)
+        # Subir 1 archivo y extraer en el servidor
+        run(f"scp {shlex.quote(str(tar_path))} {REMOTE}:{shlex.quote(remote_proj)}/upload_sources.tar.gz")
+        run(f"ssh {REMOTE} 'cd {shlex.quote(remote_proj)} && tar -xzf upload_sources.tar.gz && rm -f upload_sources.tar.gz'")
 
 
 def mostrar_ayuda():
