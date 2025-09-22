@@ -103,6 +103,18 @@ def puerto_esp32():
     sys.exit("❌ ESP32 no encontrada")
 
 
+# === NUEVO: versión opcional que NO aborta si no hay puerto ===
+def puerto_esp32_optional():
+    print("🔍 Buscando puerto ESP32 (opcional) …")
+    for p in serial.tools.list_ports.comports():
+        if any(t in p.description for t in ("CP210", "Silicon", "USB", "ESP32", "CH340", "CDC")):
+            print(f"✔ Detectado {p.device}")
+            return p.device
+    print("⚠ No se detectó puerto. Se continuará sin flashear.")
+    return None
+# ==============================================================
+
+
 def leer_libraries():
     f = Path("libraries.txt")
     if not f.exists():
@@ -471,7 +483,9 @@ def main():
         sys.exit(f"❌ No se encontró {sketch_name}")
 
     libs = leer_libraries()
-    com  = puerto_esp32()
+
+    # === CAMBIO CLAVE: NO detectamos puerto aquí. Compilamos SIEMPRE. ===
+    # com  = puerto_esp32()   ← Eliminado
 
     hash_actual   = hash_proyecto()
     hash_file     = Path(".build_hash")
@@ -523,9 +537,18 @@ def main():
 
     esptool = shutil.which("esptool.py") or f"{sys.executable} -m esptool"
 
+    # === CAMBIO CLAVE: Detectamos puerto SÓLO AHORA. Si no hay, no flasheamos. ===
+    com_final = puerto_esp32_optional()
+    if not com_final:
+        print("🚫 No se detectó puerto. La compilación y descarga de binarios se han completado correctamente.")
+        print("📦 Binarios listos en ./binarios/")
+        print("▶ Cuando conectes la placa, vuelve a ejecutar el comando para flashear directamente (sin recompilar).")
+        # Señalizamos fallo SOLO en la fase de flasheo:
+        sys.exit(2)
+
     flash_cmd = construir_flash_cmd(
         esptool=esptool,
-        com=puerto_esp32(),
+        com=com_final,
         baud=BAUD,
         files=bin_files,
         family=used_family
